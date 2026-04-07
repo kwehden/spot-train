@@ -34,6 +34,7 @@ from spot_train.models import (
     StepState,
     TaskStatus,
 )
+from spot_train.observability import timed
 from spot_train.supervisor.runner import (
     PreconditionCheck,
     StepExecutionResult,
@@ -105,7 +106,8 @@ class ToolHandlerService:
         if isinstance(validated, ToolErrorEnvelope):
             return validated
         handler = getattr(self, tool_name)
-        return handler(validated, **kwargs)
+        with timed(tool_name, "tool"):
+            return handler(validated, **kwargs)
 
     def resolve_target(
         self,
@@ -213,14 +215,10 @@ class ToolHandlerService:
                 "aliases": aliases,
                 "zone": place.zone,
                 "last_visited_at": (
-                    place.last_visited_at.isoformat()
-                    if place.last_visited_at
-                    else None
+                    place.last_visited_at.isoformat() if place.last_visited_at else None
                 ),
                 "last_observed_at": (
-                    place.last_observed_at.isoformat()
-                    if place.last_observed_at
-                    else None
+                    place.last_observed_at.isoformat() if place.last_observed_at else None
                 ),
                 "explicit_familiarity": {
                     "score": place.explicit_familiarity_score,
@@ -773,12 +771,15 @@ class ToolHandlerService:
                 "target_type": task.resolved_target_type.value,
                 "target_id": task.resolved_target_id,
             }
+        summary_text = task.result_summary or self._generate_summary_text(
+            task, observations, condition_results
+        )
         return success_response(
             outcome_code=task.outcome_code or OutcomeCode.TASK_COMPLETED,
             data=TaskSummaryData(
                 status=task.status,
                 resolved_target=resolved_target,
-                result_summary=task.result_summary,
+                result_summary=summary_text,
                 evidence_ids=[observation.observation_id for observation in observations],
                 condition_results=[
                     {
@@ -790,6 +791,22 @@ class ToolHandlerService:
                 ],
             ),
         )
+
+    def _generate_summary_text(
+        self,
+        task: Any,
+        observations: list[Any],
+        condition_results: list[Any],
+    ) -> str:
+        lines = [f"Task: {task.instruction}", f"Status: {task.status.value}"]
+        if task.resolved_target_type and task.resolved_target_id:
+            lines.append(f"Target: {task.resolved_target_type.value}:{task.resolved_target_id}")
+        lines.append(f"Evidence collected: {len(observations)}")
+        for cr in condition_results:
+            lines.append(
+                f"  Condition '{cr.condition_id}': {cr.result.value} (confidence: {cr.confidence})"
+            )
+        return "\n".join(lines)
 
     def _validate_request(
         self,
@@ -1091,7 +1108,8 @@ class ToolHandlerService:
 
         if task_run.final_status == TaskStatus.COMPLETED:
             return success_response(
-                outcome_code=latest_step.error_code and OutcomeCode.TASK_COMPLETED
+                outcome_code=latest_step.error_code
+                and OutcomeCode.TASK_COMPLETED
                 or (task_run.task.outcome_code or OutcomeCode.TASK_COMPLETED),
                 data=payload,
             )

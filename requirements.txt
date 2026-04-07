@@ -1,0 +1,22 @@
+# Core
+pydantic>=2.7,<3
+PyYAML>=6,<7
+
+# Dev
+pytest>=8,<9
+ruff>=0.4.0,<1
+
+# REPL
+cmd2==3.4.0
+
+# Strands (agent orchestration)
+strands-agents==1.34.1
+strands-agents-tools==0.3.0
+
+# Bedrock (model serving)
+boto3>=1.26,<2
+botocore>=1.29,<2
+
+# Spot SDK
+bosdyn-client==5.1.4
+bosdyn-mission==5.1.4
