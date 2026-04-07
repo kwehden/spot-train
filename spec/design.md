@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft for Gate 3 approval.
+Approved for Gate 3 on 2026-04-07.
 
 ## Purpose
 

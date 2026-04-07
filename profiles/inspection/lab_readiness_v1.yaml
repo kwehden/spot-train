@@ -1,0 +1,18 @@
+profile_id: ipr_lab_readiness_v1
+name: lab_readiness_v1
+description: Minimal dry-run inspection profile for checking the optics bench area.
+required_evidence_json:
+  - overview_image
+conditions_json:
+  - condition_id: area_clear
+    target_type: place
+    description: Confirm the target area appears clear and ready for operation.
+capture_plan_json:
+  - capture_kind: overview_image
+    description: Capture a wide view of the inspection target.
+    parameters:
+      camera: frontleft_fisheye
+approval_profile_id: apr_default_dry_run
+timeout_s: 300
+retry_limit: 1
+active: true

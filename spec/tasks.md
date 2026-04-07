@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft for Gate 4 approval.
+Approved for Gate 4 on 2026-04-07.
 
 ## Purpose
 
@@ -37,10 +37,12 @@ Deliverables:
 - choose and add Python project metadata and dependency management files
 - define formatting, linting, and test commands
 - ensure commands assume project virtualenv usage
+- define runtime configuration profiles for off-robot and robot-adjacent execution modes
 
 Exit criteria:
 
 - a developer can install dependencies in a virtualenv and run the baseline checks locally
+- baseline configuration supports selecting off-robot or robot-adjacent runtime mode without code changes
 
 ## Phase 1: persistence and contracts
 
@@ -114,10 +116,13 @@ Deliverables:
 - implement step execution orchestration
 - wire task lifecycle updates, step persistence, and evidence attachment
 - ensure only the supervisor can trigger adapter side effects
+- enforce action precondition checks before any side-effectful adapter call
+- persist memory updates for every step that changes task status or environment knowledge
 
 Exit criteria:
 
 - a fake task can traverse the full success path and persist each step
+- precondition failures return structured `blocked` or `failed` outcomes without triggering adapter side effects
 
 ### T-009 Implement retry, timeout, and recovery policies
 
@@ -140,10 +145,12 @@ Deliverables:
 
 - define typed I/O contracts for `resolve_target`, `get_place_context`, `navigate_to_place`, `inspect_place`, `capture_evidence`, `verify_condition`, `relocalize`, `get_operator_status`, and `summarize_task`
 - define common response envelope and outcome code mapping
+- define structured error contracts for schema-validation and policy-enforcement rejections
 
 Exit criteria:
 
 - tool contracts validate inputs and support structured outputs in tests
+- invalid tool requests produce structured errors that conform to the shared error contract
 
 ### T-011 Implement tool handlers
 
@@ -200,6 +207,7 @@ Exit criteria:
 Deliverables:
 
 - define Spot adapter interface boundaries for navigation, relocalization, and stop-related integration points
+- define a navigation-intent mapping contract for Spot-compatible waypoints, missions, routes, or equivalent abstractions
 - define perception adapter interface boundaries for image capture and condition analysis
 - keep real implementations stubbed until after dry-run validation
 
@@ -290,10 +298,12 @@ Deliverables:
 - expose the approved tool surface through Strands
 - ensure only the bounded tool set is registered
 - add hook points for policy enforcement and observability
+- accept operator natural-language instructions and create persisted task records with original instruction text, timestamps, and initial status
 
 Exit criteria:
 
 - a Strands agent can invoke the MVP tool surface against the dry-run stack
+- an operator instruction is converted into a persisted task before robot-side execution begins
 
 ### T-023 Add task summary generation path
 
@@ -315,6 +325,8 @@ Minimum coverage:
 - exact alias resolution
 - best-effort alias resolution
 - blocked low-confidence resolution
+- supervisor precondition failure produces structured blocked/failed outcomes with no adapter side effects
+- invalid tool schema/policy requests produce structured rejection errors
 - familiarity derivation updates
 - approval event transitions
 - stop event handling
@@ -330,6 +342,7 @@ Exit criteria:
 Minimum coverage:
 
 - end-to-end `check the optics bench` dry run
+- operator instruction intake persists task metadata (`instruction`, `timestamp`, `status`) before first execution step
 - navigation failure followed by relocalization recovery
 - inspection with inconclusive evidence
 - ridealong UI reflects supervisor progress

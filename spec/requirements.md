@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft for Gate 2 approval.
+Approved for Gate 2 on 2026-04-07.
 
 ## Purpose
 

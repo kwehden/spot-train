@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft for Gate 1 approval.
+Approved for Gate 1 on 2026-04-07.
 
 ## Problem Statement
 
