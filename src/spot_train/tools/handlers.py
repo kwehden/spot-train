@@ -8,10 +8,35 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from spot_train.adapters.perception import (
+    CaptureEvidenceRequest as AdapterCaptureEvidenceRequest,
+)
+from spot_train.adapters.perception import (
+    ConditionVerificationRequest as AdapterConditionVerificationRequest,
+)
+from spot_train.adapters.perception import (
+    PerceptionAdapter,
+)
+from spot_train.adapters.spot import (
+    SpotActionStatus,
+    SpotAdapter,
+    SpotNavigationIntent,
+    SpotRelocalizeIntent,
+)
 from spot_train.memory.repository import WorldRepository
-from spot_train.models import EntityType, OutcomeCode, ResolutionMode, TaskStatus
+from spot_train.models import (
+    ConditionResult,
+    ConditionVerdict,
+    EntityType,
+    Observation,
+    OutcomeCode,
+    ResolutionMode,
+    StepState,
+    TaskStatus,
+)
 from spot_train.supervisor.runner import (
     PreconditionCheck,
+    StepExecutionResult,
     StepOperation,
     SupervisorRunner,
     SupervisorStep,
@@ -66,9 +91,13 @@ class ToolHandlerService:
         repository: WorldRepository,
         *,
         runner: SupervisorRunner | None = None,
+        spot_adapter: SpotAdapter | None = None,
+        perception_adapter: PerceptionAdapter | None = None,
     ) -> None:
         self.repository = repository
         self.runner = runner
+        self.spot_adapter = spot_adapter
+        self.perception_adapter = perception_adapter
 
     def handle(self, tool_name: str, request: dict[str, Any] | Any, **kwargs: Any) -> HandlerResult:
         request_model = request_model_for_tool(tool_name)
@@ -242,19 +271,29 @@ class ToolHandlerService:
         validated = self._ensure_request("navigate_to_place", request)
         if isinstance(validated, ToolErrorEnvelope):
             return validated
+        resolved_operation = operation
+        resolved_recovery_operation = recovery_operation
+        success_payload: NavigateToPlaceData | None = NavigateToPlaceData(
+            place_id=validated.place_id,
+            route_policy=validated.route_policy,
+            approval_profile_id=validated.approval_profile_id,
+            visit_status="requested",
+        )
+        if resolved_operation is None and self.spot_adapter is not None:
+            resolved_operation = self._build_navigation_operation(validated)
+            success_payload = None
+        if resolved_recovery_operation is None and self.spot_adapter is not None:
+            resolved_recovery_operation = self._build_relocalization_operation(
+                RelocalizeRequest(place_id=validated.place_id)
+            )
         return self._run_side_effect_tool(
             tool_name="navigate_to_place",
             request=validated,
             task_id=task_id,
-            operation=operation,
+            operation=resolved_operation,
             precondition=precondition,
-            recovery_operation=recovery_operation,
-            success_data=NavigateToPlaceData(
-                place_id=validated.place_id,
-                route_policy=validated.route_policy,
-                approval_profile_id=validated.approval_profile_id,
-                visit_status="requested",
-            ),
+            recovery_operation=resolved_recovery_operation,
+            success_data=success_payload,
         )
 
     def inspect_place(
@@ -268,13 +307,18 @@ class ToolHandlerService:
         validated = self._ensure_request("inspect_place", request)
         if isinstance(validated, ToolErrorEnvelope):
             return validated
+        resolved_operation = operation
+        success_payload: InspectPlaceData | None = InspectPlaceData()
+        if resolved_operation is None and self.perception_adapter is not None:
+            resolved_operation = self._build_inspection_operation(validated)
+            success_payload = None
         return self._run_side_effect_tool(
             tool_name="inspect_place",
             request=validated,
             task_id=task_id,
-            operation=operation,
+            operation=resolved_operation,
             precondition=precondition,
-            success_data=InspectPlaceData(),
+            success_data=success_payload,
         )
 
     def capture_evidence(
@@ -288,11 +332,14 @@ class ToolHandlerService:
         validated = self._ensure_request("capture_evidence", request)
         if isinstance(validated, ToolErrorEnvelope):
             return validated
+        resolved_operation = operation
+        if resolved_operation is None and self.perception_adapter is not None:
+            resolved_operation = self._build_capture_evidence_operation(validated)
         return self._run_side_effect_tool(
             tool_name="capture_evidence",
             request=validated,
             task_id=task_id,
-            operation=operation,
+            operation=resolved_operation,
             precondition=precondition,
             success_data=None,
         )
@@ -350,14 +397,303 @@ class ToolHandlerService:
         validated = self._ensure_request("relocalize", request)
         if isinstance(validated, ToolErrorEnvelope):
             return validated
+        resolved_operation = operation
+        success_payload: RelocalizeData | None = RelocalizeData(
+            strategy=validated.strategy,
+            place_id=validated.place_id,
+        )
+        if resolved_operation is None and self.spot_adapter is not None:
+            resolved_operation = self._build_relocalization_operation(validated)
+            success_payload = None
         return self._run_side_effect_tool(
             tool_name="relocalize",
             request=validated,
             task_id=task_id,
-            operation=operation,
+            operation=resolved_operation,
             precondition=precondition,
-            success_data=RelocalizeData(strategy=validated.strategy, place_id=validated.place_id),
+            success_data=success_payload,
         )
+
+    def _build_navigation_operation(
+        self,
+        request: NavigateToPlaceRequest,
+    ) -> StepOperation:
+        def operation(context: Any) -> StepExecutionResult:
+            adapter = self._require_spot_adapter()
+            if adapter is None:
+                return StepExecutionResult.failed(
+                    outcome_code=OutcomeCode.TASK_FAILED,
+                    message="Spot adapter is not configured.",
+                    error_code="spot_adapter_required",
+                    retryable=False,
+                )
+
+            outcome = adapter.navigate(
+                SpotNavigationIntent(
+                    place_id=request.place_id,
+                    route_policy=request.route_policy,
+                    approval_profile_id=request.approval_profile_id,
+                    timeout_s=request.timeout_s,
+                )
+            )
+            outputs = self._navigation_outputs(outcome)
+
+            if outcome.status == SpotActionStatus.SUCCEEDED:
+                return StepExecutionResult.success(
+                    outcome_code=outcome.outcome_code,
+                    outputs=outputs,
+                    confidence=outcome.confidence,
+                )
+            if outcome.status == SpotActionStatus.RELOCALIZATION_NEEDED:
+                return StepExecutionResult(
+                    step_state=StepState.FAILED,
+                    outcome_code=outcome.outcome_code,
+                    message=outcome.message,
+                    error_code="relocalization_required",
+                    retryable=True,
+                    confidence=outcome.confidence,
+                    outputs=outputs,
+                    details={
+                        "recommended_action": outcome.recommended_action,
+                        "relocalization_required": outcome.relocalization_required,
+                        "stop_state": outcome.stop_state.value,
+                    },
+                )
+            if outcome.status == SpotActionStatus.CANCELLED:
+                return StepExecutionResult(
+                    step_state=StepState.CANCELLED,
+                    outcome_code=outcome.outcome_code,
+                    message=outcome.message,
+                    error_code="stop_requested",
+                    confidence=outcome.confidence,
+                    outputs=outputs,
+                    details={
+                        "recommended_action": outcome.recommended_action,
+                        "stop_state": outcome.stop_state.value,
+                    },
+                )
+            return StepExecutionResult(
+                step_state=StepState.FAILED,
+                outcome_code=outcome.outcome_code,
+                message=outcome.message,
+                error_code="navigation_failed",
+                retryable=True,
+                confidence=outcome.confidence,
+                outputs=outputs,
+                details={
+                    "recommended_action": outcome.recommended_action,
+                    "stop_state": outcome.stop_state.value,
+                },
+            )
+
+        return operation
+
+    def _build_relocalization_operation(
+        self,
+        request: RelocalizeRequest,
+    ) -> StepOperation:
+        def operation(context: Any) -> StepExecutionResult:
+            adapter = self._require_spot_adapter()
+            if adapter is None:
+                return StepExecutionResult.failed(
+                    outcome_code=OutcomeCode.TASK_FAILED,
+                    message="Spot adapter is not configured.",
+                    error_code="spot_adapter_required",
+                    retryable=False,
+                )
+
+            outcome = adapter.relocalize(
+                SpotRelocalizeIntent(
+                    place_id=request.place_id,
+                    strategy=request.strategy,
+                )
+            )
+            outputs = self._relocalization_outputs(outcome)
+
+            if outcome.status == SpotActionStatus.SUCCEEDED:
+                return StepExecutionResult.success(
+                    outcome_code=outcome.outcome_code,
+                    outputs=outputs,
+                    confidence=outcome.confidence,
+                )
+            if outcome.status == SpotActionStatus.CANCELLED:
+                return StepExecutionResult(
+                    step_state=StepState.CANCELLED,
+                    outcome_code=outcome.outcome_code,
+                    message=outcome.message,
+                    error_code="stop_requested",
+                    confidence=outcome.confidence,
+                    outputs=outputs,
+                    details={
+                        "recommended_action": outcome.recommended_action,
+                        "stop_state": outcome.stop_state.value,
+                    },
+                )
+            return StepExecutionResult(
+                step_state=StepState.FAILED,
+                outcome_code=outcome.outcome_code,
+                message=outcome.message,
+                error_code="relocalization_failed",
+                retryable=False,
+                confidence=outcome.confidence,
+                outputs=outputs,
+                details={
+                    "recommended_action": outcome.recommended_action,
+                    "stop_state": outcome.stop_state.value,
+                },
+            )
+
+        return operation
+
+    def _build_capture_evidence_operation(
+        self,
+        request: CaptureEvidenceRequest,
+    ) -> StepOperation:
+        def operation(context: Any) -> StepExecutionResult:
+            adapter = self._require_perception_adapter()
+            if adapter is None:
+                return StepExecutionResult.failed(
+                    outcome_code=OutcomeCode.TASK_FAILED,
+                    message="Perception adapter is not configured.",
+                    error_code="perception_adapter_required",
+                    retryable=False,
+                )
+
+            adapter_request = AdapterCaptureEvidenceRequest(
+                task_id=context.task.task_id,
+                place_id=request.place_id,
+                capture_kind=request.capture_kind,
+                capture_profile=request.capture_profile,
+            )
+            capture = adapter.capture_evidence(adapter_request)
+            observation = self._store_capture_observation(context.task.task_id, capture)
+            outputs = self._capture_outputs(observation, capture)
+
+            if capture.outcome_code == OutcomeCode.OBSERVATION_CAPTURED:
+                return StepExecutionResult.success(
+                    outcome_code=capture.outcome_code,
+                    outputs=outputs,
+                    confidence=capture.confidence,
+                )
+            if capture.outcome_code == OutcomeCode.PERCEPTION_INCONCLUSIVE:
+                return StepExecutionResult.inconclusive(
+                    outcome_code=capture.outcome_code,
+                    message=capture.summary,
+                    confidence=capture.confidence,
+                    outputs=outputs,
+                )
+            return StepExecutionResult(
+                step_state=StepState.FAILED,
+                outcome_code=capture.outcome_code,
+                message=capture.summary,
+                error_code="capture_failed",
+                retryable=True,
+                confidence=capture.confidence,
+                outputs=outputs,
+                details={
+                    "capture_kind": capture.capture_kind,
+                    "inconclusive_reason": capture.inconclusive_reason,
+                },
+            )
+
+        return operation
+
+    def _build_inspection_operation(
+        self,
+        request: InspectPlaceRequest,
+    ) -> StepOperation:
+        def operation(context: Any) -> StepExecutionResult:
+            adapter = self._require_perception_adapter()
+            if adapter is None:
+                return StepExecutionResult.failed(
+                    outcome_code=OutcomeCode.TASK_FAILED,
+                    message="Perception adapter is not configured.",
+                    error_code="perception_adapter_required",
+                    retryable=False,
+                )
+
+            profile = self.repository.get_inspection_profile(request.inspection_profile_id)
+            if profile is None:
+                return StepExecutionResult.failed(
+                    outcome_code=OutcomeCode.TASK_FAILED,
+                    message="Inspection profile is not known to the repository.",
+                    error_code="inspection_profile_missing",
+                    retryable=False,
+                )
+
+            observation_ids: list[str] = []
+            condition_results: list[dict[str, Any]] = []
+            confidence_values: list[float] = []
+            inconclusive = False
+
+            for capture_spec in profile.capture_plan_json:
+                capture = adapter.capture_evidence(
+                    AdapterCaptureEvidenceRequest(
+                        task_id=context.task.task_id,
+                        place_id=request.place_id,
+                        capture_kind=capture_spec.capture_kind,
+                        capture_profile=capture_spec.capture_profile,
+                    )
+                )
+                observation = self._store_capture_observation(context.task.task_id, capture)
+                observation_ids.append(observation.observation_id)
+                if capture.confidence is not None:
+                    confidence_values.append(capture.confidence)
+                if capture.outcome_code == OutcomeCode.PERCEPTION_INCONCLUSIVE:
+                    inconclusive = True
+
+            evidence_ids = list(observation_ids)
+            for condition_spec in profile.conditions_json:
+                verification = adapter.verify_condition(
+                    AdapterConditionVerificationRequest(
+                        task_id=context.task.task_id,
+                        target_type=condition_spec.target_type,
+                        target_id=condition_spec.target_id or request.place_id,
+                        condition_id=condition_spec.condition_id,
+                        evidence_ids=evidence_ids,
+                    )
+                )
+                self._store_condition_result(context.task.task_id, verification)
+                condition_results.append(self._condition_result_payload(verification))
+                if verification.confidence is not None:
+                    confidence_values.append(verification.confidence)
+                if verification.result == ConditionVerdict.INCONCLUSIVE:
+                    inconclusive = True
+
+            if not observation_ids:
+                return StepExecutionResult.failed(
+                    outcome_code=OutcomeCode.EVIDENCE_CAPTURE_FAILED,
+                    message="Inspection profile did not produce any evidence.",
+                    error_code="inspection_no_evidence",
+                    retryable=False,
+                )
+
+            inspection_summary = (
+                f"Collected {len(observation_ids)} observation(s) and "
+                f"{len(condition_results)} condition result(s) for {request.place_id}."
+            )
+            outputs = {
+                "place_id": request.place_id,
+                "inspection_profile_id": request.inspection_profile_id,
+                "observation_ids": observation_ids,
+                "condition_results": condition_results,
+                "inspection_summary": inspection_summary,
+            }
+            confidence = min(confidence_values) if confidence_values else None
+            if inconclusive or (confidence is not None and confidence < 0.7):
+                return StepExecutionResult.inconclusive(
+                    outcome_code=OutcomeCode.INSPECTION_INCONCLUSIVE,
+                    message=inspection_summary,
+                    confidence=confidence,
+                    outputs=outputs,
+                )
+            return StepExecutionResult.success(
+                outcome_code=OutcomeCode.INSPECTION_COMPLETED,
+                confidence=confidence,
+                outputs=outputs,
+            )
+
+        return operation
 
     def get_operator_status(
         self,
@@ -611,6 +947,99 @@ class ToolHandlerService:
             target_name=candidate.target_name,
             confidence=candidate.confidence,
         )
+
+    def _require_spot_adapter(self) -> SpotAdapter | None:
+        return self.spot_adapter
+
+    def _require_perception_adapter(self) -> PerceptionAdapter | None:
+        return self.perception_adapter
+
+    def _store_capture_observation(
+        self,
+        task_id: str,
+        capture: Any,
+    ) -> Observation:
+        observation = Observation(
+            observation_id=capture.observation_id,
+            task_id=task_id,
+            place_id=capture.place_id,
+            observation_kind=capture.capture_kind,
+            source="perception_adapter",
+            artifact_uri=capture.artifact_uri,
+            summary=capture.summary,
+            structured_data_json=capture.structured_data_json,
+            confidence=capture.confidence,
+        )
+        return self.repository.create_observation(observation)
+
+    def _store_condition_result(
+        self,
+        task_id: str,
+        verification: Any,
+    ) -> ConditionResult:
+        result = ConditionResult(
+            task_id=task_id,
+            target_type=verification.target_type,
+            target_id=verification.target_id,
+            condition_id=verification.condition_id,
+            result=verification.result,
+            confidence=verification.confidence,
+            evidence_ids_json=list(verification.evidence_ids),
+            rationale=verification.rationale,
+        )
+        return self.repository.create_condition_result(result)
+
+    def _capture_outputs(self, observation: Observation, capture: Any) -> dict[str, Any]:
+        return {
+            "observation_id": observation.observation_id,
+            "artifact_uri": observation.artifact_uri,
+            "summary": observation.summary,
+            "confidence": observation.confidence,
+            "place_id": observation.place_id,
+            "capture_kind": observation.observation_kind,
+            "capture_profile": capture.capture_profile,
+            "outcome_code": capture.outcome_code.value,
+            "structured_data_json": observation.structured_data_json,
+        }
+
+    def _condition_result_payload(self, verification: Any) -> dict[str, Any]:
+        return {
+            "target_type": verification.target_type.value,
+            "target_id": verification.target_id,
+            "condition_id": verification.condition_id,
+            "result": verification.result.value,
+            "confidence": verification.confidence,
+            "rationale": verification.rationale,
+            "evidence_ids": list(verification.evidence_ids),
+            "outcome_code": verification.outcome_code.value,
+            "structured_data_json": verification.structured_data_json,
+        }
+
+    def _navigation_outputs(self, outcome: Any) -> dict[str, Any]:
+        return {
+            "target_place_id": outcome.target_place_id,
+            "route_policy": outcome.route_policy,
+            "navigation_surface": (
+                outcome.navigation_surface.value if outcome.navigation_surface else None
+            ),
+            "confidence": outcome.confidence,
+            "message": outcome.message,
+            "recommended_action": outcome.recommended_action,
+            "stop_state": outcome.stop_state.value,
+            "relocalization_required": outcome.relocalization_required,
+            "outcome_code": outcome.outcome_code.value,
+        }
+
+    def _relocalization_outputs(self, outcome: Any) -> dict[str, Any]:
+        return {
+            "strategy": outcome.strategy,
+            "place_id": outcome.place_id,
+            "confidence": outcome.confidence,
+            "message": outcome.message,
+            "recommended_action": outcome.recommended_action,
+            "stop_state": outcome.stop_state.value,
+            "outcome_code": outcome.outcome_code.value,
+        }
 
     def _run_side_effect_tool(
         self,
