@@ -1,0 +1,6 @@
+approval_profile_id: apr_default_dry_run
+name: default_dry_run
+requires_navigation_approval: true
+requires_inspection_approval: false
+requires_retry_approval: true
+notes: Require approval before motion and before retries during MVP dry runs.

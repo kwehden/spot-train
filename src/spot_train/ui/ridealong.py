@@ -1,0 +1,1 @@
+"""Ridealong status view entrypoints."""
