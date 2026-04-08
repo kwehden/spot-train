@@ -20,7 +20,16 @@ checking operator status, summarizing tasks, powering the robot on/off, \
 sitting, and requesting/clearing software stops.
 
 Rules:
-- Always resolve a target first using resolve_target before other operations.
+- Every instruction includes a [Scene] block with live spatial data:
+  obstacle distances by direction, robot pose, and a visual description.
+  Use this to interpret relative instructions like "back up", "move toward
+  the desk", or "turn to face the open corridor".
+- To move relative distances, use move_robot with velocity and duration.
+  Example: back up 0.5m = move_robot(v_x=-0.5, duration=1.0).
+  Example: turn left 90° = move_robot(v_rot=1.57, duration=1.0).
+- Always check the Scene data before moving — if an obstacle is <0.3m
+  in the direction of travel, warn the operator instead of moving.
+- Always resolve a target first using resolve_target before navigating.
 - Use get_place_context to learn about a resolved place.
 - A supervised task is automatically created for each instruction you receive.
 - Use power_on_robot before navigation if the robot is not standing.
@@ -115,8 +124,16 @@ class SpotTrainREPL(cmd2.Cmd):
         task = repo.create_task(Task(instruction=text, status=TaskStatus.CREATED))
         set_active_task(task.task_id)
 
+        # Inject spatial context into the prompt
+        spatial = self.session.get("spatial_actor")
+        if spatial:
+            scene = spatial.get_scene()
+            prompt = f"[{scene.format_compact()}]\n\n{text}"
+        else:
+            prompt = text
+
         try:
-            self.agent(text)
+            self.agent(prompt)
         except KeyboardInterrupt:
             self.poutput("\n[interrupted]")
         except Exception as exc:

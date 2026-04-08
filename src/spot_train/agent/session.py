@@ -208,6 +208,23 @@ def create_robot_session() -> dict:
     )
     viewer.start()
 
+    # Start spatial awareness actor
+    import boto3
+    from bosdyn.client.robot_state import RobotStateClient
+
+    from spot_train.perception.spatial import SpatialAwarenessActor
+
+    state_client = spot._robot.ensure_client(RobotStateClient.default_service_name)
+    bedrock_rt = boto3.client("bedrock-runtime", region_name="us-west-2")
+    spatial_actor = SpatialAwarenessActor(
+        img_client,
+        state_client,
+        bedrock_client=bedrock_rt,
+        viewer=viewer,
+    )
+    spatial_actor.start()
+    agent_tools.set_spatial_actor(spatial_actor)
+
     return {
         "repository": repo,
         "spot_adapter": spot,
@@ -218,4 +235,5 @@ def create_robot_session() -> dict:
         "event_router": event_router,
         "map_manager": map_mgr,
         "viewer": viewer,
+        "spatial_actor": spatial_actor,
     }

@@ -25,6 +25,15 @@ def set_map_manager(manager: Any) -> None:
     _map_manager = manager
 
 
+_spatial_actor: Any = None
+
+
+def set_spatial_actor(actor: Any) -> None:
+    """Set the shared SpatialAwarenessActor instance."""
+    global _spatial_actor
+    _spatial_actor = actor
+
+
 def set_active_task(task_id: str | None) -> None:
     """Set the active task ID for side-effect tools."""
     global _active_task_id
@@ -235,6 +244,15 @@ def move_robot(
         Movement result with actual velocity and duration.
     """
     h = _require_handler()
+    # Collision check from spatial awareness
+    if _spatial_actor is not None:
+        scene = _spatial_actor.get_scene()
+        blocked = scene.is_blocked(v_x, v_y)
+        if blocked:
+            return {
+                "status": "blocked",
+                "message": f"Movement blocked: {blocked}. Check surroundings.",
+            }
     return h.handle(
         "move_robot",
         {"v_x": v_x, "v_y": v_y, "v_rot": v_rot, "duration": duration},
