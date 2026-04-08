@@ -53,6 +53,8 @@ class SpotTrainREPL(cmd2.Cmd):
         self.session = session
         self.agent = agent
         self._robot_name = self._get_robot_name()
+        self._cached_battery: int | None = None
+        self._battery_ts: float = 0
         self.prompt = self._build_prompt()
         self.hidden_commands.extend(["alias", "macro", "run_script", "shell", "shortcuts"])
 
@@ -66,6 +68,12 @@ class SpotTrainREPL(cmd2.Cmd):
         return "spot"
 
     def _get_battery_pct(self) -> int | None:
+        import time
+
+        # Cache for 30 seconds to avoid blocking SDK calls on every prompt
+        now = time.monotonic()
+        if self._cached_battery is not None and now - self._battery_ts < 30:
+            return self._cached_battery
         adapter = self.session.get("spot_adapter")
         if adapter and hasattr(adapter, "_robot"):
             try:
@@ -73,10 +81,12 @@ class SpotTrainREPL(cmd2.Cmd):
 
                 sc = adapter._robot.ensure_client(RobotStateClient.default_service_name)
                 state = sc.get_robot_state()
-                return int(state.power_state.locomotion_charge_percentage.value)
+                self._cached_battery = int(state.power_state.locomotion_charge_percentage.value)
+                self._battery_ts = now
+                return self._cached_battery
             except Exception:
                 pass
-        return None
+        return self._cached_battery
 
     def _build_prompt(self) -> str:
         name = self._robot_name.lower()
