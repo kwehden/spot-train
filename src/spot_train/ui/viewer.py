@@ -257,12 +257,14 @@ class SpotTrainViewer:
     # -- Video feed -------------------------------------------------------
 
     def _video_loop(self) -> None:
+        consecutive_errors = 0
         while self._running:
             if not self._frame_cb:
                 time.sleep(1)
                 continue
             try:
                 frames = self._frame_cb()
+                consecutive_errors = 0
                 if not frames:
                     time.sleep(0.5)
                     continue
@@ -291,7 +293,9 @@ class SpotTrainViewer:
                         pass
 
             except Exception:
-                pass
+                consecutive_errors += 1
+                time.sleep(min(consecutive_errors, 10))
+                continue
             time.sleep(0.5)
 
     # -- Display ----------------------------------------------------------
