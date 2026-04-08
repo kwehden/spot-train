@@ -36,6 +36,7 @@ from spot_train.models import (
 )
 from spot_train.observability import timed
 from spot_train.supervisor.runner import (
+    ExecutionContext,
     PreconditionCheck,
     StepExecutionResult,
     StepOperation,
@@ -809,6 +810,207 @@ class ToolHandlerService:
                 f"  Condition '{cr.condition_id}': {cr.result.value} (confidence: {cr.confidence})"
             )
         return "\n".join(lines)
+
+    # -- Robot control handlers (routed through supervisor) ----------------
+
+    def power_on(
+        self,
+        request: Any,
+        *,
+        task_id: str | None = None,
+    ) -> HandlerResult:
+        validated = self._ensure_request("power_on", request)
+        if isinstance(validated, ToolErrorEnvelope):
+            return validated
+
+        def _op(ctx: ExecutionContext) -> StepExecutionResult:
+            adapter = self.spot_adapter
+            if adapter is None or not hasattr(adapter, "_robot"):
+                return StepExecutionResult.failed(
+                    message="No robot connected (dry-run mode).",
+                    error_code="no_robot",
+                )
+            try:
+                import time
+
+                from bosdyn.client.robot_command import (
+                    RobotCommandBuilder,
+                    RobotCommandClient,
+                )
+
+                adapter._robot.power_on(timeout_sec=20)
+                cmd = adapter._robot.ensure_client(RobotCommandClient.default_service_name)
+                cmd.robot_command(RobotCommandBuilder.synchro_stand_command(), timeout=10)
+                time.sleep(1)
+                return StepExecutionResult.success(
+                    outputs={"message": "Robot powered on and standing."}
+                )
+            except Exception as exc:
+                return StepExecutionResult.failed(
+                    message=f"Power on failed: {exc}", error_code="power_on_error"
+                )
+
+        return self._run_side_effect_tool(
+            tool_name="power_on",
+            request=validated,
+            task_id=task_id,
+            operation=_op,
+            precondition=None,
+            success_data={"message": "Robot powered on and standing."},
+        )
+
+    def sit(
+        self,
+        request: Any,
+        *,
+        task_id: str | None = None,
+    ) -> HandlerResult:
+        validated = self._ensure_request("sit", request)
+        if isinstance(validated, ToolErrorEnvelope):
+            return validated
+
+        def _op(ctx: ExecutionContext) -> StepExecutionResult:
+            adapter = self.spot_adapter
+            if adapter is None or not hasattr(adapter, "_robot"):
+                return StepExecutionResult.failed(
+                    message="No robot connected (dry-run mode).",
+                    error_code="no_robot",
+                )
+            try:
+                from bosdyn.client.robot_command import (
+                    RobotCommandBuilder,
+                    RobotCommandClient,
+                )
+
+                cmd = adapter._robot.ensure_client(RobotCommandClient.default_service_name)
+                cmd.robot_command(RobotCommandBuilder.synchro_sit_command(), timeout=10)
+                return StepExecutionResult.success(outputs={"message": "Robot is sitting."})
+            except Exception as exc:
+                return StepExecutionResult.failed(
+                    message=f"Sit failed: {exc}", error_code="sit_error"
+                )
+
+        return self._run_side_effect_tool(
+            tool_name="sit",
+            request=validated,
+            task_id=task_id,
+            operation=_op,
+            precondition=None,
+            success_data={"message": "Robot is sitting. Motors still on."},
+        )
+
+    def power_off(
+        self,
+        request: Any,
+        *,
+        task_id: str | None = None,
+    ) -> HandlerResult:
+        validated = self._ensure_request("power_off", request)
+        if isinstance(validated, ToolErrorEnvelope):
+            return validated
+
+        def _op(ctx: ExecutionContext) -> StepExecutionResult:
+            adapter = self.spot_adapter
+            if adapter is None or not hasattr(adapter, "_robot"):
+                return StepExecutionResult.failed(
+                    message="No robot connected (dry-run mode).",
+                    error_code="no_robot",
+                )
+            try:
+                import time
+
+                from bosdyn.client.robot_command import (
+                    RobotCommandBuilder,
+                    RobotCommandClient,
+                )
+
+                cmd = adapter._robot.ensure_client(RobotCommandClient.default_service_name)
+                cmd.robot_command(RobotCommandBuilder.synchro_sit_command(), timeout=10)
+                time.sleep(2)
+                adapter._robot.power_off(cut_immediately=False, timeout_sec=20)
+                return StepExecutionResult.success(
+                    outputs={"message": "Robot sat down and powered off."}
+                )
+            except Exception as exc:
+                return StepExecutionResult.failed(
+                    message=f"Power off failed: {exc}",
+                    error_code="power_off_error",
+                )
+
+        return self._run_side_effect_tool(
+            tool_name="power_off",
+            request=validated,
+            task_id=task_id,
+            operation=_op,
+            precondition=None,
+            success_data={"message": "Robot sat down and powered off."},
+        )
+
+    def request_stop(
+        self,
+        request: Any,
+        *,
+        task_id: str | None = None,
+    ) -> HandlerResult:
+        validated = self._ensure_request("request_stop", request)
+        if isinstance(validated, ToolErrorEnvelope):
+            return validated
+
+        def _op(ctx: ExecutionContext) -> StepExecutionResult:
+            adapter = self.spot_adapter
+            if adapter is None:
+                return StepExecutionResult.failed(
+                    message="No adapter available.", error_code="no_adapter"
+                )
+            outcome = adapter.request_stop(reason=validated.reason)
+            return StepExecutionResult.success(
+                outputs={
+                    "stop_state": outcome.stop_state.value,
+                    "message": outcome.message,
+                }
+            )
+
+        return self._run_side_effect_tool(
+            tool_name="request_stop",
+            request=validated,
+            task_id=task_id,
+            operation=_op,
+            precondition=None,
+            success_data=None,
+        )
+
+    def clear_stop(
+        self,
+        request: Any,
+        *,
+        task_id: str | None = None,
+    ) -> HandlerResult:
+        validated = self._ensure_request("clear_stop", request)
+        if isinstance(validated, ToolErrorEnvelope):
+            return validated
+
+        def _op(ctx: ExecutionContext) -> StepExecutionResult:
+            adapter = self.spot_adapter
+            if adapter is None:
+                return StepExecutionResult.failed(
+                    message="No adapter available.", error_code="no_adapter"
+                )
+            outcome = adapter.clear_stop()
+            return StepExecutionResult.success(
+                outputs={
+                    "stop_state": outcome.stop_state.value,
+                    "message": outcome.message,
+                }
+            )
+
+        return self._run_side_effect_tool(
+            tool_name="clear_stop",
+            request=validated,
+            task_id=task_id,
+            operation=_op,
+            precondition=None,
+            success_data=None,
+        )
 
     def _validate_request(
         self,

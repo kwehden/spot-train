@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from strands import tool
 
 from spot_train.tools.handlers import ToolHandlerService
@@ -10,7 +12,7 @@ _handler: ToolHandlerService | None = None
 _active_task_id: str | None = None
 
 
-def configure(handler: ToolHandlerService) -> None:
+def configure(handler: ToolHandlerService, **_kwargs: Any) -> None:
     """Set the shared handler instance for all tools."""
     global _handler
     _handler = handler
@@ -199,6 +201,64 @@ def summarize_task(task_id: str | None = None) -> dict:
     return h.handle("summarize_task", {"task_id": tid}).model_dump()
 
 
+@tool
+def power_on_robot() -> dict:
+    """Power on the robot's motors and stand up.
+
+    Returns:
+        Status message confirming power on and standing.
+    """
+    h = _require_handler()
+    return h.handle("power_on", {}, task_id=_active_task_id).model_dump()
+
+
+@tool
+def sit_robot() -> dict:
+    """Command the robot to sit down. Motors remain on.
+
+    Returns:
+        Status message confirming the robot is sitting.
+    """
+    h = _require_handler()
+    return h.handle("sit", {}, task_id=_active_task_id).model_dump()
+
+
+@tool
+def power_off_robot() -> dict:
+    """Sit the robot down and power off motors.
+
+    Returns:
+        Status message confirming power off.
+    """
+    h = _require_handler()
+    return h.handle("power_off", {}, task_id=_active_task_id).model_dump()
+
+
+@tool
+def request_stop(reason: str = "operator-requested") -> dict:
+    """Request an immediate software stop, halting all robot motion.
+
+    Args:
+        reason: Reason for the stop request.
+
+    Returns:
+        Stop state confirmation.
+    """
+    h = _require_handler()
+    return h.handle("request_stop", {"reason": reason}, task_id=_active_task_id).model_dump()
+
+
+@tool
+def clear_stop() -> dict:
+    """Clear the software stop state so the robot can resume operations.
+
+    Returns:
+        Stop state confirmation.
+    """
+    h = _require_handler()
+    return h.handle("clear_stop", {}, task_id=_active_task_id).model_dump()
+
+
 def all_tools() -> list:
     """Return the list of all Strands tool functions for agent registration."""
     return [
@@ -211,4 +271,9 @@ def all_tools() -> list:
         relocalize,
         get_operator_status,
         summarize_task,
+        power_on_robot,
+        sit_robot,
+        power_off_robot,
+        request_stop,
+        clear_stop,
     ]

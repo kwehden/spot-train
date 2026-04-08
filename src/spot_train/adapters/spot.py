@@ -585,10 +585,11 @@ class RealSpotAdapter:
     # -- relocalization ---------------------------------------------------
 
     def relocalize(self, intent: SpotRelocalizeIntent) -> SpotRelocalizationOutcome:
-        """Attempt localization recovery using fiducial markers or nearest waypoint.
+        """Attempt localization recovery using visual features.
 
-        Calls set_localization with FIDUCIAL_INIT_NEAREST to actively trigger
-        a relocalization attempt, then verifies the result.
+        If a place_id is provided and has a waypoint binding, uses that
+        waypoint as the initial guess. Falls back to FIDUCIAL_INIT_NO_FIDUCIAL
+        so localization works on maps recorded without fiducials.
         """
         if self._stop_state == SpotStopState.STOP_REQUESTED:
             return SpotRelocalizationOutcome(
@@ -604,9 +605,16 @@ class RealSpotAdapter:
         try:
             from bosdyn.api.graph_nav import nav_pb2
 
+            # Build initial guess from waypoint binding if available
+            initial_guess = nav_pb2.Localization()
+            if intent.place_id:
+                binding = self._bindings.get(intent.place_id)
+                if binding and binding.waypoint_id:
+                    initial_guess.waypoint_id = binding.waypoint_id
+
             self._graph_nav.set_localization(
-                initial_guess_localization=nav_pb2.Localization(),
-                fiducial_init=self._set_loc_request.FIDUCIAL_INIT_NEAREST,
+                initial_guess_localization=initial_guess,
+                fiducial_init=self._set_loc_request.FIDUCIAL_INIT_NO_FIDUCIAL,
             )
             state = self._graph_nav.get_localization_state()
             if state.localization.waypoint_id:

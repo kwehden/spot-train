@@ -1,5 +1,5 @@
 # Install dependencies. Ranges mirror pyproject.toml.
-# For reproducible installs, use: pip install -e ".[dev,spot]"
+# For reproducible installs, use: pip install -e ".[dev,spot,perception]"
 # or generate a lockfile with pip-compile / uv lock.
 
 # Core
@@ -24,3 +24,7 @@ botocore>=1.29,<2
 # Spot SDK
 bosdyn-client>=5.1,<5.2
 bosdyn-mission>=5.1,<5.2
+
+# Perception (point cloud + image processing)
+opencv-python>=4.8,<5
+numpy>=1.24,<3
