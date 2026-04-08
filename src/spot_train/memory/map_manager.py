@@ -271,21 +271,30 @@ class MapManager:
             saved.ParseFromString(f.read())
 
         print(f"  Uploading graph: {len(saved.waypoints)} waypoints...")
-        self._gn.upload_graph(graph=saved, generate_new_anchoring=True)
+        resp = self._gn.upload_graph(graph=saved, generate_new_anchoring=True)
+
+        # Only upload snapshots the robot doesn't already have
+        missing_wp = set(resp.unknown_waypoint_snapshot_ids) if resp else set()
+        missing_edge = set(resp.unknown_edge_snapshot_ids) if resp else set()
+        print(f"  Missing snapshots: {len(missing_wp)} waypoint, {len(missing_edge)} edge")
 
         for fname in os.listdir(self._map_dir):
             path = os.path.join(self._map_dir, fname)
             try:
                 if fname.startswith("waypoint_snapshot_"):
-                    with open(path, "rb") as f:
-                        snap = map_pb2.WaypointSnapshot()
-                        snap.ParseFromString(f.read())
-                        self._gn.upload_waypoint_snapshot(snap)
+                    sid = fname[len("waypoint_snapshot_") :]
+                    if not missing_wp or sid in missing_wp:
+                        with open(path, "rb") as f:
+                            snap = map_pb2.WaypointSnapshot()
+                            snap.ParseFromString(f.read())
+                            self._gn.upload_waypoint_snapshot(snap)
                 elif fname.startswith("edge_snapshot_"):
-                    with open(path, "rb") as f:
-                        snap = map_pb2.EdgeSnapshot()
-                        snap.ParseFromString(f.read())
-                        self._gn.upload_edge_snapshot(snap)
+                    sid = fname[len("edge_snapshot_") :]
+                    if not missing_edge or sid in missing_edge:
+                        with open(path, "rb") as f:
+                            snap = map_pb2.EdgeSnapshot()
+                            snap.ParseFromString(f.read())
+                            self._gn.upload_edge_snapshot(snap)
             except Exception:
                 pass
 
