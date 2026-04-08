@@ -112,8 +112,7 @@ class SpotTrainREPL(cmd2.Cmd):
         set_active_task(task.task_id)
 
         try:
-            result = self.agent(text)
-            self._print_agent_result(result)
+            self.agent(text)
         except KeyboardInterrupt:
             self.poutput("\n[interrupted]")
         except Exception as exc:
