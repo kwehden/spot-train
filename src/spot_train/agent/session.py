@@ -64,22 +64,31 @@ def _upload_graph_if_needed(spot_adapter):
 
     from bosdyn.api.graph_nav import map_pb2
 
-    graph = spot_adapter._graph_nav.download_graph()
-    if list(graph.waypoints):
-        return  # graph already loaded
+    try:
+        graph = spot_adapter._graph_nav.download_graph()
+        wp_count = len(list(graph.waypoints))
+        if wp_count > 0:
+            print(f"  Graph already loaded: {wp_count} waypoints")
+            return
+    except Exception:
+        pass
 
     map_dir = os.path.join("data", "maps", "lab_map")
     graph_path = os.path.join(map_dir, "graph")
     if not os.path.exists(graph_path):
-        return  # no saved map
+        print("  No saved map at data/maps/lab_map/")
+        return
 
     with open(graph_path, "rb") as f:
         saved = map_pb2.Graph()
         saved.ParseFromString(f.read())
 
+    print(f"  Uploading graph: {len(saved.waypoints)} waypoints...")
     gn = spot_adapter._graph_nav
     gn.upload_graph(graph=saved, generate_new_anchoring=True)
 
+    wp_uploaded = 0
+    edge_uploaded = 0
     for fname in os.listdir(map_dir):
         path = os.path.join(map_dir, fname)
         if fname.startswith("waypoint_snapshot_"):
@@ -88,6 +97,7 @@ def _upload_graph_if_needed(spot_adapter):
                 snap.ParseFromString(f.read())
                 try:
                     gn.upload_waypoint_snapshot(snap)
+                    wp_uploaded += 1
                 except Exception:
                     pass
         elif fname.startswith("edge_snapshot_"):
@@ -96,8 +106,10 @@ def _upload_graph_if_needed(spot_adapter):
                 snap.ParseFromString(f.read())
                 try:
                     gn.upload_edge_snapshot(snap)
+                    edge_uploaded += 1
                 except Exception:
                     pass
+    print(f"  Uploaded {wp_uploaded} waypoint + {edge_uploaded} edge snapshots")
 
 
 def create_dry_run_session() -> dict:
