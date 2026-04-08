@@ -6,7 +6,8 @@ import os
 
 import cmd2
 
-from spot_train.agent.tools import all_tools
+from spot_train.agent.tools import all_tools, get_active_task, set_active_task
+from spot_train.models import Task, TaskStatus
 
 SYSTEM_PROMPT = """\
 You are a Spot robot operator assistant. You help a human operator manage \
@@ -20,15 +21,14 @@ operator status, and summarize tasks.
 Rules:
 - Always resolve a target first using resolve_target before other operations.
 - Use get_place_context to learn about a resolved place.
-- Navigation, inspection, capture, and verification tools require an active \
-  task context managed by the supervisor. If they return a task_id_required \
-  error, tell the operator that these operations need to be run within a \
-  supervised task session.
-- get_operator_status, resolve_target, get_place_context, and summarize_task \
-  can be called freely without a task context.
+- A supervised task is automatically created for each instruction you receive. \
+  All tools including navigation, inspection, capture, and verification will \
+  work within this task context.
 - Report results clearly and concisely.
 - If a tool returns an error or blocked status, explain what happened.
 - Never fabricate observations or evidence.
+- When you finish handling an instruction, call summarize_task to produce \
+  a final summary for the operator.
 """
 
 
@@ -53,35 +53,49 @@ class SpotTrainREPL(cmd2.Cmd):
         self.hidden_commands.extend(["alias", "macro", "run_script", "shell", "shortcuts"])
 
     def default(self, statement: cmd2.Statement) -> None:
-        """Send any unrecognized input to the Strands agent."""
+        """Create a supervised task and send the instruction to the agent."""
         text = str(statement).strip()
         if not text:
             return
+
+        # Create a task record for this instruction
+        repo = self.session["repository"]
+        task = repo.create_task(Task(instruction=text, status=TaskStatus.CREATED))
+        set_active_task(task.task_id)
+        self.poutput(f"[task {task.task_id[:12]}...] {text}")
+
         try:
             result = self.agent(text)
-            if hasattr(result, "message"):
-                msg = result.message
-                if hasattr(msg, "content"):
-                    for block in msg.content:
-                        if isinstance(block, dict) and "text" in block:
-                            self.poutput(block["text"])
-                        elif hasattr(block, "text"):
-                            self.poutput(block.text)
-                        elif isinstance(block, str):
-                            self.poutput(block)
-                elif isinstance(msg, str):
-                    self.poutput(msg)
-            elif isinstance(result, str):
-                self.poutput(result)
+            self._print_agent_result(result)
         except KeyboardInterrupt:
             self.poutput("\n[interrupted]")
         except Exception as exc:
             self.poutput(f"[error] {exc}")
+        finally:
+            set_active_task(None)
+
+    def _print_agent_result(self, result) -> None:
+        msg = getattr(result, "message", result)
+        if hasattr(msg, "content"):
+            content = msg.content
+        elif isinstance(msg, dict) and "content" in msg:
+            content = msg["content"]
+        else:
+            self.poutput(str(msg))
+            return
+        for block in content:
+            if hasattr(block, "text"):
+                self.poutput(block.text)
+            elif isinstance(block, dict) and "text" in block:
+                self.poutput(block["text"])
+            elif isinstance(block, str):
+                self.poutput(block)
 
     def do_status(self, _statement) -> None:
         """Show current operator status."""
         handler = self.session["handler"]
-        result = handler.handle("get_operator_status", {})
+        tid = get_active_task()
+        result = handler.handle("get_operator_status", {"task_id": tid} if tid else {})
         self.poutput(result.model_dump_json(indent=2))
 
     def do_places(self, _statement) -> None:
