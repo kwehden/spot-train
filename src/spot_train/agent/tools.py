@@ -202,6 +202,40 @@ def summarize_task(task_id: str | None = None) -> dict:
 
 
 @tool
+def move_robot(
+    v_x: float = 0.0, v_y: float = 0.0, v_rot: float = 0.0, duration: float = 1.0
+) -> dict:
+    """Move the robot with velocity commands for a specified duration.
+
+    Use this for relative movements like backing up, sidestepping, or turning.
+    Positive v_x = forward, negative = backward.
+    Positive v_y = left, negative = right.
+    Positive v_rot = counter-clockwise turn, negative = clockwise.
+
+    Common patterns:
+    - Back up 0.5m: v_x=-0.5, duration=1.0
+    - Sidestep left 0.3m: v_y=0.3, duration=1.0
+    - Turn left 90 degrees: v_rot=1.57, duration=1.0
+    - Turn right 45 degrees: v_rot=-0.78, duration=1.0
+
+    Args:
+        v_x: Forward/backward speed in m/s (positive=forward, negative=backward).
+        v_y: Left/right speed in m/s (positive=left, negative=right).
+        v_rot: Rotation speed in rad/s (positive=counter-clockwise).
+        duration: How long to move in seconds (0.1 to 10.0).
+
+    Returns:
+        Movement result with actual velocity and duration.
+    """
+    h = _require_handler()
+    return h.handle(
+        "move_robot",
+        {"v_x": v_x, "v_y": v_y, "v_rot": v_rot, "duration": duration},
+        task_id=_active_task_id,
+    ).model_dump()
+
+
+@tool
 def power_on_robot() -> dict:
     """Power on the robot's motors and stand up.
 
@@ -276,4 +310,5 @@ def all_tools() -> list:
         power_off_robot,
         request_stop,
         clear_stop,
+        move_robot,
     ]
