@@ -20,17 +20,27 @@ checking operator status, summarizing tasks, powering the robot on/off, \
 sitting, and requesting/clearing software stops.
 
 Rules:
-- Always resolve a target first using resolve_target before other operations.
+- Every instruction includes a [Scene] block with live spatial data:
+  obstacle distances by direction, robot pose, and a visual description.
+  Use this to interpret relative instructions like "back up", "move toward
+  the desk", or "turn to face the open corridor".
+- To move relative distances, use move_robot with velocity and duration.
+  Example: back up 0.5m = move_robot(v_x=-0.5, duration=1.0).
+  Example: turn left 90° = move_robot(v_rot=1.57, duration=1.0).
+- Always check the Scene data before moving — if an obstacle is <0.3m
+  in the direction of travel, warn the operator instead of moving.
+- Always resolve a target first using resolve_target before navigating.
 - Use get_place_context to learn about a resolved place.
 - A supervised task is automatically created for each instruction you receive.
 - Use power_on_robot before navigation if the robot is not standing.
 - Use power_off_robot or sit_robot when the operator asks to power down or sit.
 - Use request_stop for emergency stops and clear_stop to resume.
 - Report results clearly and concisely.
+- Only call summarize_task when the operator explicitly asks for a summary.
 - If a tool returns an error or blocked status, explain what happened.
+- Use mark_location when the operator says "this is X" or "remember this as X".
+- Use forget_location when the operator says "forget X" or "remove X".
 - Never fabricate observations or evidence.
-- When you finish handling an instruction, call summarize_task to produce \
-  a final summary for the operator.
 """
 
 
@@ -53,6 +63,8 @@ class SpotTrainREPL(cmd2.Cmd):
         self.session = session
         self.agent = agent
         self._robot_name = self._get_robot_name()
+        self._cached_battery: int | None = None
+        self._battery_ts: float = 0
         self.prompt = self._build_prompt()
         self.hidden_commands.extend(["alias", "macro", "run_script", "shell", "shortcuts"])
 
@@ -66,6 +78,12 @@ class SpotTrainREPL(cmd2.Cmd):
         return "spot"
 
     def _get_battery_pct(self) -> int | None:
+        import time
+
+        # Cache for 30 seconds to avoid blocking SDK calls on every prompt
+        now = time.monotonic()
+        if self._cached_battery is not None and now - self._battery_ts < 30:
+            return self._cached_battery
         adapter = self.session.get("spot_adapter")
         if adapter and hasattr(adapter, "_robot"):
             try:
@@ -73,10 +91,12 @@ class SpotTrainREPL(cmd2.Cmd):
 
                 sc = adapter._robot.ensure_client(RobotStateClient.default_service_name)
                 state = sc.get_robot_state()
-                return int(state.power_state.locomotion_charge_percentage.value)
+                self._cached_battery = int(state.power_state.locomotion_charge_percentage.value)
+                self._battery_ts = now
+                return self._cached_battery
             except Exception:
                 pass
-        return None
+        return self._cached_battery
 
     def _build_prompt(self) -> str:
         name = self._robot_name.lower()
@@ -96,15 +116,24 @@ class SpotTrainREPL(cmd2.Cmd):
         if not text:
             return
 
+        # Echo the instruction so it's visible in the terminal
+        self.poutput(f">>> {text}")
+
         # Create a task record for this instruction
         repo = self.session["repository"]
         task = repo.create_task(Task(instruction=text, status=TaskStatus.CREATED))
         set_active_task(task.task_id)
-        self.poutput(f"[task {task.task_id[:12]}...] {text}")
+
+        # Inject spatial context into the prompt
+        spatial = self.session.get("spatial_actor")
+        if spatial:
+            scene = spatial.get_scene()
+            prompt = f"[{scene.format_compact()}]\n\n{text}"
+        else:
+            prompt = text
 
         try:
-            result = self.agent(text)
-            self._print_agent_result(result)
+            self.agent(prompt)
         except KeyboardInterrupt:
             self.poutput("\n[interrupted]")
         except Exception as exc:

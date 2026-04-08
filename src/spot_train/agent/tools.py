@@ -9,6 +9,7 @@ from strands import tool
 from spot_train.tools.handlers import ToolHandlerService
 
 _handler: ToolHandlerService | None = None
+_map_manager: Any = None
 _active_task_id: str | None = None
 
 
@@ -16,6 +17,21 @@ def configure(handler: ToolHandlerService, **_kwargs: Any) -> None:
     """Set the shared handler instance for all tools."""
     global _handler
     _handler = handler
+
+
+def set_map_manager(manager: Any) -> None:
+    """Set the shared MapManager instance."""
+    global _map_manager
+    _map_manager = manager
+
+
+_spatial_actor: Any = None
+
+
+def set_spatial_actor(actor: Any) -> None:
+    """Set the shared SpatialAwarenessActor instance."""
+    global _spatial_actor
+    _spatial_actor = actor
 
 
 def set_active_task(task_id: str | None) -> None:
@@ -202,6 +218,49 @@ def summarize_task(task_id: str | None = None) -> dict:
 
 
 @tool
+def move_robot(
+    v_x: float = 0.0, v_y: float = 0.0, v_rot: float = 0.0, duration: float = 1.0
+) -> dict:
+    """Move the robot with velocity commands for a specified duration.
+
+    Use this for relative movements like backing up, sidestepping, or turning.
+    Positive v_x = forward, negative = backward.
+    Positive v_y = left, negative = right.
+    Positive v_rot = counter-clockwise turn, negative = clockwise.
+
+    Common patterns:
+    - Back up 0.5m: v_x=-0.5, duration=1.0
+    - Sidestep left 0.3m: v_y=0.3, duration=1.0
+    - Turn left 90 degrees: v_rot=1.57, duration=1.0
+    - Turn right 45 degrees: v_rot=-0.78, duration=1.0
+
+    Args:
+        v_x: Forward/backward speed in m/s (positive=forward, negative=backward).
+        v_y: Left/right speed in m/s (positive=left, negative=right).
+        v_rot: Rotation speed in rad/s (positive=counter-clockwise).
+        duration: How long to move in seconds (0.1 to 10.0).
+
+    Returns:
+        Movement result with actual velocity and duration.
+    """
+    h = _require_handler()
+    # Collision check from spatial awareness
+    if _spatial_actor is not None:
+        scene = _spatial_actor.get_scene()
+        blocked = scene.is_blocked(v_x, v_y)
+        if blocked:
+            return {
+                "status": "blocked",
+                "message": f"Movement blocked: {blocked}. Check surroundings.",
+            }
+    return h.handle(
+        "move_robot",
+        {"v_x": v_x, "v_y": v_y, "v_rot": v_rot, "duration": duration},
+        task_id=_active_task_id,
+    ).model_dump()
+
+
+@tool
 def power_on_robot() -> dict:
     """Power on the robot's motors and stand up.
 
@@ -259,6 +318,68 @@ def clear_stop() -> dict:
     return h.handle("clear_stop", {}, task_id=_active_task_id).model_dump()
 
 
+@tool
+def mark_location(name: str) -> dict:
+    """Mark the robot's current position as a named location.
+
+    If the location already exists, updates it to the current position.
+    If it's new, creates a new place in the world model and records a
+    waypoint on the robot's navigation graph.
+
+    Use this when the operator says things like "this is the break room",
+    "remember this spot as X", or "update the optics bench location".
+
+    Args:
+        name: Human-friendly name for this location.
+
+    Returns:
+        Confirmation with the place ID and waypoint ID.
+    """
+    if _map_manager is None:
+        return {"status": "error", "message": "Map manager not available."}
+    try:
+        ref = _map_manager.create_waypoint_here(name)
+        return {
+            "status": "success",
+            "message": f"Location '{name}' marked at current position.",
+            "place_id": ref.place_id,
+            "waypoint_id": ref.waypoint_id,
+        }
+    except Exception as exc:
+        return {"status": "error", "message": f"Failed to mark location: {exc}"}
+
+
+@tool
+def forget_location(name: str) -> dict:
+    """Remove a location's navigation binding.
+
+    The place remains in the world model history but can no longer be
+    navigated to. Use this when a location has moved, is no longer
+    relevant, or was incorrectly placed.
+
+    Args:
+        name: Name of the location to forget.
+
+    Returns:
+        Confirmation that the location was removed.
+    """
+    if _map_manager is None:
+        return {"status": "error", "message": "Map manager not available."}
+    h = _require_handler()
+    result = h.handle("resolve_target", {"name": name}, task_id=_active_task_id)
+    data = result.model_dump().get("data", {})
+    place_id = data.get("selected_target_id")
+    if not place_id:
+        return {"status": "error", "message": f"Could not resolve '{name}'."}
+    removed = _map_manager.remove_location(place_id)
+    if removed:
+        return {
+            "status": "success",
+            "message": f"Location '{name}' ({place_id}) navigation removed.",
+        }
+    return {"status": "error", "message": f"No navigation binding found for '{name}'."}
+
+
 def all_tools() -> list:
     """Return the list of all Strands tool functions for agent registration."""
     return [
@@ -276,4 +397,7 @@ def all_tools() -> list:
         power_off_robot,
         request_stop,
         clear_stop,
+        move_robot,
+        mark_location,
+        forget_location,
     ]

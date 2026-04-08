@@ -48,14 +48,17 @@ class _CorrelationFormatter(logging.Formatter):
         return f"{ts} [{record.levelname}] {record.name} | task_id={tid} step_id={sid} | {msg}"
 
 
-def configure_logging(level: int = logging.INFO) -> None:
+def configure_logging(level: int = logging.INFO, *, console: bool = True) -> None:
     """Attach the correlation formatter to the ``spot_train`` logger."""
     logger = logging.getLogger("spot_train")
     logger.setLevel(level)
-    if not logger.handlers:
+    if not logger.handlers and console:
         handler = logging.StreamHandler()
         handler.setFormatter(_CorrelationFormatter())
         logger.addHandler(handler)
+    elif not console:
+        # Suppress console output — traces will go to the viewer
+        logger.addHandler(logging.NullHandler())
 
 
 def get_logger(name: str) -> logging.Logger:

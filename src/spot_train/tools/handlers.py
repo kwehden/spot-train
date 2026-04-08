@@ -1012,6 +1012,62 @@ class ToolHandlerService:
             success_data=None,
         )
 
+    def move_robot(
+        self,
+        request: Any,
+        *,
+        task_id: str | None = None,
+    ) -> HandlerResult:
+        validated = self._ensure_request("move_robot", request)
+        if isinstance(validated, ToolErrorEnvelope):
+            return validated
+
+        def _op(ctx: ExecutionContext) -> StepExecutionResult:
+            adapter = self.spot_adapter
+            if adapter is None or not hasattr(adapter, "_robot"):
+                return StepExecutionResult.failed(
+                    message="No robot connected.", error_code="no_robot"
+                )
+            try:
+                import time
+
+                from bosdyn.client.robot_command import (
+                    RobotCommandBuilder,
+                    RobotCommandClient,
+                )
+
+                cmd_client = adapter._robot.ensure_client(RobotCommandClient.default_service_name)
+                cmd = RobotCommandBuilder.synchro_velocity_command(
+                    v_x=validated.v_x,
+                    v_y=validated.v_y,
+                    v_rot=validated.v_rot,
+                )
+                cmd_client.robot_command(cmd, end_time_secs=time.time() + validated.duration)
+                time.sleep(validated.duration + 0.2)
+                # Stop after move
+                cmd_client.robot_command(RobotCommandBuilder.stop_command())
+                return StepExecutionResult.success(
+                    outputs={
+                        "message": (
+                            f"Moved: v_x={validated.v_x}, v_y={validated.v_y}, "
+                            f"v_rot={validated.v_rot} for {validated.duration}s"
+                        ),
+                    }
+                )
+            except Exception as exc:
+                return StepExecutionResult.failed(
+                    message=f"Move failed: {exc}", error_code="move_error"
+                )
+
+        return self._run_side_effect_tool(
+            tool_name="move_robot",
+            request=validated,
+            task_id=task_id,
+            operation=_op,
+            precondition=None,
+            success_data=None,
+        )
+
     def _validate_request(
         self,
         tool_name: str,
