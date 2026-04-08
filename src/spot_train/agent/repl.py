@@ -107,6 +107,9 @@ class SpotTrainREPL(cmd2.Cmd):
         if not text:
             return
 
+        # Echo the instruction so it's visible in the terminal
+        self.poutput(f">>> {text}")
+
         # Create a task record for this instruction
         repo = self.session["repository"]
         task = repo.create_task(Task(instruction=text, status=TaskStatus.CREATED))

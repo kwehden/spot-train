@@ -177,6 +177,37 @@ def create_robot_session() -> dict:
     runner, handler, event_router = _make_runner_and_handler(repo, spot=spot, perception=perception)
     agent_tools.set_map_manager(map_mgr)
 
+    # Start viewer with live video feed
+    from bosdyn.client.image import ImageClient
+
+    from spot_train.ui.viewer import CAMERA_SOURCES, DEPTH_SOURCES, SpotTrainViewer
+
+    img_client = spot._robot.ensure_client(ImageClient.default_service_name)
+    all_sources = list(CAMERA_SOURCES) + list(DEPTH_SOURCES)
+
+    def _fetch_frames() -> dict:
+        try:
+            responses = img_client.get_image_from_sources(all_sources)
+            result = {}
+            for resp in responses:
+                shot = resp.shot
+                if shot and shot.image and shot.image.data:
+                    result[resp.source.name] = (
+                        shot.image.data,
+                        shot.image.rows,
+                        shot.image.cols,
+                        shot.image.pixel_format,
+                    )
+            return result
+        except Exception:
+            return {}
+
+    viewer = SpotTrainViewer(
+        frame_callback=_fetch_frames,
+        title=f"☀️ {spot._robot.get_id().nickname or 'Spot'} Viewer",
+    )
+    viewer.start()
+
     return {
         "repository": repo,
         "spot_adapter": spot,
@@ -186,4 +217,5 @@ def create_robot_session() -> dict:
         "handler": handler,
         "event_router": event_router,
         "map_manager": map_mgr,
+        "viewer": viewer,
     }
