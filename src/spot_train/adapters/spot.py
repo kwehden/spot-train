@@ -584,12 +584,21 @@ class RealSpotAdapter:
 
     # -- relocalization ---------------------------------------------------
 
-    def relocalize(self, intent: SpotRelocalizeIntent) -> SpotRelocalizationOutcome:
-        """Attempt localization recovery using visual features.
+    # Relocalization tolerances — generous to handle drift after the robot
+    # has moved away from its last known position. 20m covers a full indoor
+    # lab floor; π radians allows any heading. These compensate for the fact
+    # that visual-feature matching (no fiducials) needs a wide search radius
+    # when the robot has been manually moved or lost localization mid-route.
+    _RELOC_MAX_DISTANCE_M = 20.0
+    _RELOC_MAX_YAW_RAD = 3.14159
 
-        If a place_id is provided and has a waypoint binding, uses that
-        waypoint as the initial guess. Falls back to FIDUCIAL_INIT_NO_FIDUCIAL
-        so localization works on maps recorded without fiducials.
+    def relocalize(self, intent: SpotRelocalizeIntent) -> SpotRelocalizationOutcome:
+        """Attempt localization recovery using visual features (EXPERIMENTAL).
+
+        Not yet field-verified. If a place_id is provided and has a waypoint
+        binding, uses that waypoint as the initial guess with identity body
+        transform. Falls back to FIDUCIAL_INIT_NO_FIDUCIAL so localization
+        works on maps recorded without fiducials.
         """
         if self._stop_state == SpotStopState.STOP_REQUESTED:
             return SpotRelocalizationOutcome(
@@ -613,21 +622,31 @@ class RealSpotAdapter:
                 binding = self._bindings.get(intent.place_id)
                 if binding and binding.waypoint_id:
                     initial_guess.waypoint_id = binding.waypoint_id
-                    # Identity transform: assume robot is roughly at the waypoint
                     initial_guess.waypoint_tform_body.rotation.w = 1.0
 
             # Get current odom pose for the ko_tform_body hint
-            state_client = self._robot.ensure_client(RobotStateClient.default_service_name)
-            robot_state = state_client.get_robot_state()
-            odom_tform_body = get_odom_tform_body(
-                robot_state.kinematic_state.transforms_snapshot
-            ).to_proto()
+            try:
+                state_client = self._robot.ensure_client(RobotStateClient.default_service_name)
+                robot_state = state_client.get_robot_state()
+                odom_tform_body = get_odom_tform_body(
+                    robot_state.kinematic_state.transforms_snapshot
+                ).to_proto()
+            except Exception as state_exc:
+                return SpotRelocalizationOutcome(
+                    status=SpotActionStatus.FAILED,
+                    outcome_code=OutcomeCode.RELOCALIZATION_FAILED,
+                    message=f"Cannot read robot state: {state_exc}",
+                    strategy=intent.strategy,
+                    place_id=intent.place_id,
+                    confidence=0.0,
+                    recommended_action="request_operator_assistance",
+                )
 
             self._graph_nav.set_localization(
                 initial_guess_localization=initial_guess,
                 ko_tform_body=odom_tform_body,
-                max_distance=20.0,
-                max_yaw=3.14159,
+                max_distance=self._RELOC_MAX_DISTANCE_M,
+                max_yaw=self._RELOC_MAX_YAW_RAD,
                 fiducial_init=self._set_loc_request.FIDUCIAL_INIT_NO_FIDUCIAL,
             )
             state = self._graph_nav.get_localization_state()

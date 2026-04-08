@@ -42,15 +42,9 @@ Each panel shows:
 
 ### Orientation corrections
 
-Per Boston Dynamics SDK camera mounting angles:
-
-| Camera | Rotation (°CCW) | Body-frame coverage |
-|--------|-----------------|---------------------|
-| frontleft_fisheye_image | -78 | Forward-left, ~315°-45° |
-| frontright_fisheye_image | -102 | Forward-right, ~315°-45° |
-| left_fisheye_image | 0 | Left side, ~225°-315° |
-| right_fisheye_image | 180 | Right side, ~45°-135° |
-| back_fisheye_image | 0 | Rear, ~135°-225° |
+See the camera configuration table in
+[docs/perception-architecture.md](perception-architecture.md#camera-configuration)
+for rotation angles and body-frame coverage per camera.
 
 Images are rotated before display so "up" in the panel corresponds
 to "away from the robot body" for that camera's perspective.
