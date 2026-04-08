@@ -59,12 +59,6 @@ python -m ruff check src/ tests/ --quiet
 python -m pytest tests/ -ra --tb=short -q
 
 echo ""
-echo "✅ Stack ready. To launch the agent REPL:"
+echo "✅ Stack ready. Launching agent REPL..."
 echo ""
-echo "   source $VENV_DIR/bin/activate"
-echo "   python $REPO_DIR/scripts/run.py              # real Spot (default)"
-echo "   python $REPO_DIR/scripts/run.py --dry-run    # fake adapters, no robot"
-echo ""
-echo "   Helper scripts:"
-echo "   python $REPO_DIR/scripts/record_map.py       # record a GraphNav map"
-echo "   python $REPO_DIR/scripts/load_map.py         # load map into world DB"
+exec python "$REPO_DIR/scripts/run.py" "$@"
