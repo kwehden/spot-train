@@ -27,10 +27,9 @@ Rules:
 - Use power_off_robot or sit_robot when the operator asks to power down or sit.
 - Use request_stop for emergency stops and clear_stop to resume.
 - Report results clearly and concisely.
+- Only call summarize_task when the operator explicitly asks for a summary.
 - If a tool returns an error or blocked status, explain what happened.
 - Never fabricate observations or evidence.
-- When you finish handling an instruction, call summarize_task to produce \
-  a final summary for the operator.
 """
 
 

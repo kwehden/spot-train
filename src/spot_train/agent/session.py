@@ -133,7 +133,7 @@ def create_robot_session() -> dict:
     """
     from spot_train.adapters.spot import RealSpotAdapter
 
-    configure_logging()
+    configure_logging(console=False)
     db_path = os.environ.get("SPOT_TRAIN_DB_PATH", "data/world.sqlite")
     repo = WorldRepository.connect(db_path, initialize=False)
     create_schema(repo.connection)
