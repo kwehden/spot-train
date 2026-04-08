@@ -26,32 +26,35 @@ fi
 # ── Ensure package is installed ──
 pip install -e ".[perception]" -q
 
-# ── Check Spot env vars ──
-missing=()
-[ -z "${SPOT_HOSTNAME:-}" ] && missing+=("SPOT_HOSTNAME")
-[ -z "${SPOT_USERNAME:-}" ] && missing+=("SPOT_USERNAME")
-[ -z "${SPOT_PASSWORD:-}" ] && missing+=("SPOT_PASSWORD")
+# ── Check Spot env vars (skip for --dry-run) ──
+if ! echo "$@" | grep -q -- "--dry-run"; then
+    missing=()
+    [ -z "${SPOT_HOSTNAME:-}" ] && missing+=("SPOT_HOSTNAME")
+    [ -z "${SPOT_USERNAME:-}" ] && missing+=("SPOT_USERNAME")
+    [ -z "${SPOT_PASSWORD:-}" ] && missing+=("SPOT_PASSWORD")
 
-if [ ${#missing[@]} -gt 0 ]; then
-    echo "❌ Missing environment variables: ${missing[*]}"
-    echo "   Export them or source your .env before running this script."
-    exit 1
+    if [ ${#missing[@]} -gt 0 ]; then
+        echo "❌ Missing environment variables: ${missing[*]}"
+        echo "   Export them, or use: ./start.sh --dry-run"
+        exit 1
+    fi
+    echo "✅ Spot connection: $SPOT_USERNAME@$SPOT_HOSTNAME"
 fi
-
-echo "✅ Spot connection: $SPOT_USERNAME@$SPOT_HOSTNAME"
 
 # ── Check runtime mode ──
 echo "📋 Runtime mode: ${SPOT_TRAIN_RUNTIME_MODE:-off_robot}"
 
-# ── Remind about e-stop ──
-echo ""
-echo "⚠️  BEFORE proceeding, open a separate terminal and run:"
-echo ""
-echo "     source $VENV_DIR/bin/activate"
-echo "     python $REPO_DIR/scripts/estop_control.py"
-echo ""
-echo "   Release the e-stop there before issuing motor-on commands."
-echo ""
+# ── Remind about e-stop (skip for --dry-run) ──
+if ! echo "$@" | grep -q -- "--dry-run"; then
+    echo ""
+    echo "⚠️  BEFORE proceeding, open a separate terminal and run:"
+    echo ""
+    echo "     source $VENV_DIR/bin/activate"
+    echo "     python $REPO_DIR/scripts/estop_control.py"
+    echo ""
+    echo "   Release the e-stop there before issuing motor-on commands."
+    echo ""
+fi
 
 # ── Run checks ──
 echo "🔍 Running lint + tests ..."
