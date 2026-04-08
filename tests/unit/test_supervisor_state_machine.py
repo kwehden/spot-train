@@ -80,8 +80,7 @@ def test_state_machine_models_recovery_and_approval_paths() -> None:
         == TaskStatus.EXECUTING
     )
     assert (
-        SupervisorStateMachine.retry_exhausted(TaskStatus.RECOVERING).current
-        == TaskStatus.FAILED
+        SupervisorStateMachine.retry_exhausted(TaskStatus.RECOVERING).current == TaskStatus.FAILED
     )
 
 

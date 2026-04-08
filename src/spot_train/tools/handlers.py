@@ -701,6 +701,7 @@ class ToolHandlerService:
         if isinstance(validated, ToolErrorEnvelope):
             return validated
         if validated.task_id is None:
+            stop = self.spot_adapter.stop_state.value if self.spot_adapter else "unknown"
             return success_response(
                 outcome_code=OutcomeCode.TASK_COMPLETED,
                 data=OperatorStatusData(
@@ -708,7 +709,7 @@ class ToolHandlerService:
                     supervisor_state=None,
                     latest_step=None,
                     approval_pending=False,
-                    stop_state="clear",
+                    stop_state=stop,
                     recent_evidence_ids=[],
                 ),
             )
@@ -724,6 +725,7 @@ class ToolHandlerService:
         observations = self.repository.list_observations(validated.task_id)
         latest_step = steps[-1] if steps else None
         pending_approval = task.status == TaskStatus.AWAITING_APPROVAL
+        stop = self.spot_adapter.stop_state.value if self.spot_adapter else "unknown"
         return success_response(
             outcome_code=task.outcome_code or OutcomeCode.TASK_COMPLETED,
             data=OperatorStatusData(
@@ -743,7 +745,7 @@ class ToolHandlerService:
                     else None
                 ),
                 approval_pending=pending_approval,
-                stop_state="clear",
+                stop_state=stop,
                 recent_evidence_ids=[obs.observation_id for obs in observations[-5:]],
             ),
         )

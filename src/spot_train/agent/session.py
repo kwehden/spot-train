@@ -6,7 +6,7 @@ import os
 
 from spot_train.adapters.approval import FakeApprovalAdapter
 from spot_train.adapters.perception import FakePerceptionAdapter
-from spot_train.adapters.spot import FakeSpotAdapter
+from spot_train.adapters.spot import FakeSpotAdapter, SpotNavigationBinding, SpotNavigationSurface
 from spot_train.agent import tools as agent_tools
 from spot_train.memory.repository import WorldRepository
 from spot_train.memory.schema import create_schema
@@ -23,17 +23,7 @@ from spot_train.supervisor.state_machine import SupervisorStateMachine
 from spot_train.tools.handlers import ToolHandlerService
 
 
-def create_dry_run_session() -> dict:
-    """Bootstrap a complete dry-run session with fake adapters."""
-    configure_logging()
-    db_path = os.environ.get("SPOT_TRAIN_DB_PATH", ":memory:")
-    repo = WorldRepository.connect(db_path, initialize=False)
-    create_schema(repo.connection)
-    repo.seed_minimal_lab_world()
-
-    spot = FakeSpotAdapter()
-    perception = FakePerceptionAdapter()
-    approval = FakeApprovalAdapter()
+def _make_runner_and_handler(repo, *, spot, perception):
     runner = SupervisorRunner(
         repo,
         state_machine=SupervisorStateMachine,
@@ -47,6 +37,72 @@ def create_dry_run_session() -> dict:
     )
     agent_tools.configure(handler)
     event_router = OperatorEventRouter(repository=repo, runner=runner)
+    return runner, handler, event_router
+
+
+def _sync_navigation_bindings(repo, spot_adapter):
+    """Register navigation bindings on the adapter from repository graph refs."""
+    for place in repo.list_places():
+        refs = repo.list_graph_refs(place.place_id)
+        for ref in refs:
+            if ref.waypoint_id:
+                spot_adapter.register_navigation_binding(
+                    SpotNavigationBinding(
+                        place_id=place.place_id,
+                        surface=SpotNavigationSurface.WAYPOINT,
+                        waypoint_id=ref.waypoint_id,
+                        mission_id=ref.graph_id,
+                        anchor_hint=ref.anchor_hint,
+                        relocalization_hint=ref.relocalization_hint_json or {},
+                    )
+                )
+
+
+def create_dry_run_session() -> dict:
+    """Bootstrap a complete dry-run session with fake adapters."""
+    configure_logging()
+    db_path = os.environ.get("SPOT_TRAIN_DB_PATH", ":memory:")
+    repo = WorldRepository.connect(db_path, initialize=False)
+    create_schema(repo.connection)
+    repo.seed_minimal_lab_world()
+
+    spot = FakeSpotAdapter()
+    perception = FakePerceptionAdapter()
+    approval = FakeApprovalAdapter()
+    runner, handler, event_router = _make_runner_and_handler(repo, spot=spot, perception=perception)
+    _sync_navigation_bindings(repo, spot)
+
+    return {
+        "repository": repo,
+        "spot_adapter": spot,
+        "perception_adapter": perception,
+        "approval_adapter": approval,
+        "runner": runner,
+        "handler": handler,
+        "event_router": event_router,
+    }
+
+
+def create_robot_session() -> dict:
+    """Bootstrap a session connected to the real Spot robot.
+
+    Requires SPOT_HOSTNAME, SPOT_USERNAME, SPOT_PASSWORD in the environment.
+    Perception remains fake until a real adapter is implemented.
+    """
+    from spot_train.adapters.spot import RealSpotAdapter
+
+    configure_logging()
+    db_path = os.environ.get("SPOT_TRAIN_DB_PATH", "data/world.sqlite")
+    repo = WorldRepository.connect(db_path, initialize=False)
+    create_schema(repo.connection)
+    repo.seed_minimal_lab_world()
+
+    spot = RealSpotAdapter.connect()
+    spot.acquire_lease()
+    perception = FakePerceptionAdapter()
+    approval = FakeApprovalAdapter()
+    runner, handler, event_router = _make_runner_and_handler(repo, spot=spot, perception=perception)
+    _sync_navigation_bindings(repo, spot)
 
     return {
         "repository": repo,
