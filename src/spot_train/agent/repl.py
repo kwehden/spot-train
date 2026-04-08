@@ -100,7 +100,6 @@ class SpotTrainREPL(cmd2.Cmd):
         repo = self.session["repository"]
         task = repo.create_task(Task(instruction=text, status=TaskStatus.CREATED))
         set_active_task(task.task_id)
-        self.poutput(f"[task {task.task_id[:12]}...] {text}")
 
         try:
             result = self.agent(text)
