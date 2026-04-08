@@ -42,6 +42,11 @@ class MapManager:
         self._save_thread = threading.Thread(target=self._save_loop, daemon=True)
         self._save_thread.start()
 
+    def stop(self) -> None:
+        """Flush pending saves and stop the background thread."""
+        self._save_queue.put("__stop__")
+        self._save_thread.join(timeout=10)
+
     # -- Public API -------------------------------------------------------
 
     def create_waypoint_here(self, name: str) -> GraphRef:
@@ -298,14 +303,19 @@ class MapManager:
 
         while True:
             try:
-                self._save_queue.get(timeout=5)
+                msg = self._save_queue.get(timeout=5)
             except queue.Empty:
                 continue
+
+            if msg == "__stop__":
+                return
 
             # Drain any additional queued saves
             while not self._save_queue.empty():
                 try:
-                    self._save_queue.get_nowait()
+                    m = self._save_queue.get_nowait()
+                    if m == "__stop__":
+                        return
                 except queue.Empty:
                     break
 

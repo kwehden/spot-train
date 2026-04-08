@@ -215,6 +215,14 @@ def run_repl(*, mode: str = "dry_run", model_id: str | None = None, region: str 
     except KeyboardInterrupt:
         print("\nExiting.")
     finally:
+        # Clean up all background threads
+        for key in ("spatial_actor", "viewer", "map_manager"):
+            component = session.get(key)
+            if component and hasattr(component, "stop"):
+                try:
+                    component.stop()
+                except Exception:
+                    pass
         spot = session.get("spot_adapter")
         if hasattr(spot, "release_lease"):
             spot.release_lease()
