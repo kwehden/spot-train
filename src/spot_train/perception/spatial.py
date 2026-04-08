@@ -163,13 +163,29 @@ class SpatialAwarenessActor:
                 pass
             time.sleep(0.5)
 
+    def _is_standing(self) -> bool:
+        """Check if the robot is powered on and standing."""
+        try:
+            state = self._state_client.get_robot_state()
+            # motor_power_state: 1=off, 2=on, 3=powering_on, 4=powering_off, 5=error
+            return state.power_state.motor_power_state == 2
+        except Exception:
+            return False
+
     def _poll_sensors(self) -> None:
         import base64
 
         from bosdyn.client.frame_helpers import get_odom_tform_body
 
-        # Grab front cameras + depth
-        responses = self._image_client.get_image_from_sources(_POLL_SOURCES)
+        standing = self._is_standing()
+
+        # Only poll depth when standing — cameras see the ground otherwise
+        sources = list(_POLL_SOURCES) if standing else [
+            s for s in _POLL_SOURCES if "depth" not in s
+        ]
+        if not sources:
+            return
+        responses = self._image_client.get_image_from_sources(sources)
 
         depth_left: np.ndarray | None = None
         depth_right: np.ndarray | None = None
