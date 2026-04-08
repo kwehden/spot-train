@@ -642,13 +642,35 @@ class RealSpotAdapter:
                     recommended_action="request_operator_assistance",
                 )
 
-            self._graph_nav.set_localization(
-                initial_guess_localization=initial_guess,
-                ko_tform_body=odom_tform_body,
-                max_distance=self._RELOC_MAX_DISTANCE_M,
-                max_yaw=self._RELOC_MAX_YAW_RAD,
-                fiducial_init=self._set_loc_request.FIDUCIAL_INIT_NO_FIDUCIAL,
-            )
+            # Try fiducials first, fall back to visual features
+            localized = False
+            for fiducial_init in (
+                self._set_loc_request.FIDUCIAL_INIT_NEAREST,
+                self._set_loc_request.FIDUCIAL_INIT_NO_FIDUCIAL,
+            ):
+                try:
+                    self._graph_nav.set_localization(
+                        initial_guess_localization=initial_guess,
+                        ko_tform_body=odom_tform_body,
+                        max_distance=self._RELOC_MAX_DISTANCE_M,
+                        max_yaw=self._RELOC_MAX_YAW_RAD,
+                        fiducial_init=fiducial_init,
+                    )
+                    localized = True
+                    break
+                except Exception:
+                    continue
+
+            if not localized:
+                return SpotRelocalizationOutcome(
+                    status=SpotActionStatus.FAILED,
+                    outcome_code=OutcomeCode.RELOCALIZATION_FAILED,
+                    message="All localization methods failed.",
+                    strategy=intent.strategy,
+                    place_id=intent.place_id,
+                    confidence=0.0,
+                    recommended_action="request_operator_assistance",
+                )
             state = self._graph_nav.get_localization_state()
             if state.localization.waypoint_id:
                 return SpotRelocalizationOutcome(
