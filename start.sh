@@ -27,7 +27,7 @@ fi
 pip install -e ".[perception]" -q
 
 # ── Check Spot env vars (skip for --dry-run) ──
-if ! echo "$@" | grep -q -- "--dry-run"; then
+if ! [[ " $* " == *" --dry-run "* ]]; then
     missing=()
     [ -z "${SPOT_HOSTNAME:-}" ] && missing+=("SPOT_HOSTNAME")
     [ -z "${SPOT_USERNAME:-}" ] && missing+=("SPOT_USERNAME")
@@ -45,7 +45,7 @@ fi
 echo "📋 Runtime mode: ${SPOT_TRAIN_RUNTIME_MODE:-off_robot}"
 
 # ── Remind about e-stop (skip for --dry-run) ──
-if ! echo "$@" | grep -q -- "--dry-run"; then
+if ! [[ " $* " == *" --dry-run "* ]]; then
     echo ""
     echo "⚠️  BEFORE proceeding, open a separate terminal and run:"
     echo ""
