@@ -29,6 +29,8 @@ Rules:
 - Report results clearly and concisely.
 - Only call summarize_task when the operator explicitly asks for a summary.
 - If a tool returns an error or blocked status, explain what happened.
+- Use mark_location when the operator says "this is X" or "remember this as X".
+- Use forget_location when the operator says "forget X" or "remove X".
 - Never fabricate observations or evidence.
 """
 

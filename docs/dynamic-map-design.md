@@ -196,14 +196,20 @@ MapManager handles incremental updates after that.
 4. `RealSpotAdapter.relocalize()` → `MapManager.relocalize_best_effort()`
 5. Adapter keeps its binding registry but MapManager owns the updates
 
-## Open Questions
+## Open Questions — Resolved
 
-1. Should the MapManager also handle edge creation between new waypoints
-   and existing ones? The recording client can create edges, but choosing
-   which waypoints to connect requires spatial reasoning.
+1. **Edge creation**: YES — MapManager auto-creates edges between new
+   waypoints and the nearest existing waypoint. Uses the recording
+   client's `create_edge` with the transform derived from odometry.
 
-2. Should `mark_location` require the robot to be standing and localized,
-   or should it work even when not localized (creating an orphan waypoint)?
+2. **Mark when not localized**: YES — `mark_location` works even when
+   not localized. If fiducials or visual evidence are available, the
+   waypoint is anchored to those. If not, it creates an orphan waypoint
+   that can be connected later when the robot traverses between it and
+   a known waypoint.
 
-3. Should the graph be saved to disk on every change, or only on session
-   end? Frequent saves protect against crashes but add I/O.
+3. **Save frequency**: Every change, async. Uses an actor-model pattern
+   with a background thread and a queue. Graph mutations are applied
+   immediately to the robot and world DB, then a save task is enqueued
+   for async disk persistence. This protects against crashes without
+   blocking the control path.

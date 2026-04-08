@@ -144,6 +144,7 @@ def create_robot_session() -> dict:
     Perception remains fake until a real adapter is implemented.
     """
     from spot_train.adapters.spot import RealSpotAdapter
+    from spot_train.memory.map_manager import MapManager
 
     configure_logging(console=False)
     db_path = os.environ.get("SPOT_TRAIN_DB_PATH", "data/world.sqlite")
@@ -154,11 +155,27 @@ def create_robot_session() -> dict:
 
     spot = RealSpotAdapter.connect()
     spot.acquire_lease()
-    _upload_graph_if_needed(spot)
+
+    from bosdyn.client.graph_nav import GraphNavClient
+    from bosdyn.client.recording import GraphNavRecordingServiceClient
+
+    gn = spot._robot.ensure_client(GraphNavClient.default_service_name)
+    rec = spot._robot.ensure_client(GraphNavRecordingServiceClient.default_service_name)
+    map_mgr = MapManager(repo, gn, rec, spot._robot, spot_adapter=spot)
+    map_mgr.sync_to_robot()
+    map_mgr.sync_from_robot()
+
+    # Attempt relocalization at startup
+    wp = map_mgr.relocalize_best_effort()
+    if wp:
+        print(f"  Relocalized at {wp}")
+    else:
+        print("  ⚠️  Not localized — use 'relocalize' or 'mark location'")
+
     perception = RealPerceptionAdapter.from_robot(spot._robot)
     approval = FakeApprovalAdapter()
     runner, handler, event_router = _make_runner_and_handler(repo, spot=spot, perception=perception)
-    _sync_navigation_bindings(repo, spot)
+    agent_tools.set_map_manager(map_mgr)
 
     return {
         "repository": repo,
@@ -168,4 +185,5 @@ def create_robot_session() -> dict:
         "runner": runner,
         "handler": handler,
         "event_router": event_router,
+        "map_manager": map_mgr,
     }

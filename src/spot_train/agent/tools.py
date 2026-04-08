@@ -9,6 +9,7 @@ from strands import tool
 from spot_train.tools.handlers import ToolHandlerService
 
 _handler: ToolHandlerService | None = None
+_map_manager: Any = None
 _active_task_id: str | None = None
 
 
@@ -16,6 +17,12 @@ def configure(handler: ToolHandlerService, **_kwargs: Any) -> None:
     """Set the shared handler instance for all tools."""
     global _handler
     _handler = handler
+
+
+def set_map_manager(manager: Any) -> None:
+    """Set the shared MapManager instance."""
+    global _map_manager
+    _map_manager = manager
 
 
 def set_active_task(task_id: str | None) -> None:
@@ -293,6 +300,68 @@ def clear_stop() -> dict:
     return h.handle("clear_stop", {}, task_id=_active_task_id).model_dump()
 
 
+@tool
+def mark_location(name: str) -> dict:
+    """Mark the robot's current position as a named location.
+
+    If the location already exists, updates it to the current position.
+    If it's new, creates a new place in the world model and records a
+    waypoint on the robot's navigation graph.
+
+    Use this when the operator says things like "this is the break room",
+    "remember this spot as X", or "update the optics bench location".
+
+    Args:
+        name: Human-friendly name for this location.
+
+    Returns:
+        Confirmation with the place ID and waypoint ID.
+    """
+    if _map_manager is None:
+        return {"status": "error", "message": "Map manager not available."}
+    try:
+        ref = _map_manager.create_waypoint_here(name)
+        return {
+            "status": "success",
+            "message": f"Location '{name}' marked at current position.",
+            "place_id": ref.place_id,
+            "waypoint_id": ref.waypoint_id,
+        }
+    except Exception as exc:
+        return {"status": "error", "message": f"Failed to mark location: {exc}"}
+
+
+@tool
+def forget_location(name: str) -> dict:
+    """Remove a location's navigation binding.
+
+    The place remains in the world model history but can no longer be
+    navigated to. Use this when a location has moved, is no longer
+    relevant, or was incorrectly placed.
+
+    Args:
+        name: Name of the location to forget.
+
+    Returns:
+        Confirmation that the location was removed.
+    """
+    if _map_manager is None:
+        return {"status": "error", "message": "Map manager not available."}
+    h = _require_handler()
+    result = h.handle("resolve_target", {"name": name}, task_id=_active_task_id)
+    data = result.model_dump().get("data", {})
+    place_id = data.get("selected_target_id")
+    if not place_id:
+        return {"status": "error", "message": f"Could not resolve '{name}'."}
+    removed = _map_manager.remove_location(place_id)
+    if removed:
+        return {
+            "status": "success",
+            "message": f"Location '{name}' ({place_id}) navigation removed.",
+        }
+    return {"status": "error", "message": f"No navigation binding found for '{name}'."}
+
+
 def all_tools() -> list:
     """Return the list of all Strands tool functions for agent registration."""
     return [
@@ -311,4 +380,6 @@ def all_tools() -> list:
         request_stop,
         clear_stop,
         move_robot,
+        mark_location,
+        forget_location,
     ]
