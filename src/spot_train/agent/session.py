@@ -58,6 +58,48 @@ def _sync_navigation_bindings(repo, spot_adapter):
                 )
 
 
+def _upload_graph_if_needed(spot_adapter):
+    """Upload the saved GraphNav map if the robot has no graph loaded."""
+    import os
+
+    from bosdyn.api.graph_nav import map_pb2
+
+    graph = spot_adapter._graph_nav.download_graph()
+    if list(graph.waypoints):
+        return  # graph already loaded
+
+    map_dir = os.path.join("data", "maps", "lab_map")
+    graph_path = os.path.join(map_dir, "graph")
+    if not os.path.exists(graph_path):
+        return  # no saved map
+
+    with open(graph_path, "rb") as f:
+        saved = map_pb2.Graph()
+        saved.ParseFromString(f.read())
+
+    gn = spot_adapter._graph_nav
+    gn.upload_graph(graph=saved, generate_new_anchoring=True)
+
+    for fname in os.listdir(map_dir):
+        path = os.path.join(map_dir, fname)
+        if fname.startswith("waypoint_snapshot_"):
+            with open(path, "rb") as f:
+                snap = map_pb2.WaypointSnapshot()
+                snap.ParseFromString(f.read())
+                try:
+                    gn.upload_waypoint_snapshot(snap)
+                except Exception:
+                    pass
+        elif fname.startswith("edge_snapshot_"):
+            with open(path, "rb") as f:
+                snap = map_pb2.EdgeSnapshot()
+                snap.ParseFromString(f.read())
+                try:
+                    gn.upload_edge_snapshot(snap)
+                except Exception:
+                    pass
+
+
 def create_dry_run_session() -> dict:
     """Bootstrap a complete dry-run session with fake adapters."""
     configure_logging()
@@ -100,6 +142,7 @@ def create_robot_session() -> dict:
 
     spot = RealSpotAdapter.connect()
     spot.acquire_lease()
+    _upload_graph_if_needed(spot)
     perception = RealPerceptionAdapter.from_robot(spot._robot)
     approval = FakeApprovalAdapter()
     runner, handler, event_router = _make_runner_and_handler(repo, spot=spot, perception=perception)
