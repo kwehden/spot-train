@@ -64,7 +64,7 @@ class WorldRepository:
         *,
         initialize: bool = False,
     ) -> "WorldRepository":
-        connection = sqlite3.connect(str(path))
+        connection = sqlite3.connect(str(path), check_same_thread=False)
         repository = cls(connection)
         if initialize:
             create_schema(connection)

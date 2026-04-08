@@ -219,10 +219,7 @@ class RequestEnvelope(SpotTrainModel):
 class ResponseEnvelope(SpotTrainModel):
     tool_name: str
     response: (
-        ToolSuccessResponse
-        | ToolBlockedResponse
-        | ToolFailedResponse
-        | ToolInconclusiveResponse
+        ToolSuccessResponse | ToolBlockedResponse | ToolFailedResponse | ToolInconclusiveResponse
     )
 
 

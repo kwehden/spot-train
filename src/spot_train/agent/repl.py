@@ -14,16 +14,18 @@ You are a Spot robot operator assistant. You help a human operator manage \
 Boston Dynamics Spot in an indoor lab by translating natural-language \
 instructions into tool calls.
 
-Available tools let you: resolve place/asset names, navigate to places, \
-inspect places, capture evidence, verify conditions, relocalize, check \
-operator status, and summarize tasks.
+You have tools for: resolving place/asset names, navigating to places, \
+inspecting places, capturing evidence, verifying conditions, relocalizing, \
+checking operator status, summarizing tasks, powering the robot on/off, \
+sitting, and requesting/clearing software stops.
 
 Rules:
 - Always resolve a target first using resolve_target before other operations.
 - Use get_place_context to learn about a resolved place.
-- A supervised task is automatically created for each instruction you receive. \
-  All tools including navigation, inspection, capture, and verification will \
-  work within this task context.
+- A supervised task is automatically created for each instruction you receive.
+- Use power_on_robot before navigation if the robot is not standing.
+- Use power_off_robot or sit_robot when the operator asks to power down or sit.
+- Use request_stop for emergency stops and clear_stop to resume.
 - Report results clearly and concisely.
 - If a tool returns an error or blocked status, explain what happened.
 - Never fabricate observations or evidence.
@@ -37,12 +39,13 @@ class SpotTrainREPL(cmd2.Cmd):
 
     intro = (
         "=== Spot-Train Agent REPL ===\n"
-        "Type an instruction for Spot, or use commands below.\n"
+        "Type natural language instructions for Spot.\n"
         "  status  — show current operator status\n"
         "  places  — list known places\n"
-        "  stop    — request stop\n"
-        "  clear   — clear stop state\n"
-        "  quit    — exit\n"
+        "  quit    — exit and release lease\n"
+        "\n"
+        "Examples: 'power on', 'navigate to office 1', 'sit down',\n"
+        "          'capture evidence at home', 'stop', 'power off'\n"
     )
 
     def __init__(self, session: dict, agent: object, **kwargs):
@@ -105,18 +108,6 @@ class SpotTrainREPL(cmd2.Cmd):
             aliases = repo.list_place_aliases(place.place_id)
             alias_str = ", ".join(a.alias for a in aliases)
             self.poutput(f"  {place.canonical_name} [{place.place_id}] aliases: {alias_str}")
-
-    def do_stop(self, _statement) -> None:
-        """Request stop."""
-        adapter = self.session["spot_adapter"]
-        outcome = adapter.request_stop(reason="operator REPL stop")
-        self.poutput(f"Stop: {outcome.message}")
-
-    def do_clear(self, _statement) -> None:
-        """Clear stop state."""
-        adapter = self.session["spot_adapter"]
-        outcome = adapter.clear_stop()
-        self.poutput(f"Clear: {outcome.message}")
 
     def do_quit(self, _statement) -> bool:
         """Exit the REPL."""

@@ -37,6 +37,10 @@ spot = [
   "bosdyn-client==5.1.4",
   "bosdyn-mission==5.1.4",
 ]
+perception = [
+  "opencv-python>=4.8,<5",
+  "numpy>=1.24,<3",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

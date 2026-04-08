@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 
 from spot_train.adapters.approval import FakeApprovalAdapter
-from spot_train.adapters.perception import FakePerceptionAdapter
+from spot_train.adapters.perception import FakePerceptionAdapter, RealPerceptionAdapter
 from spot_train.adapters.spot import FakeSpotAdapter, SpotNavigationBinding, SpotNavigationSurface
 from spot_train.agent import tools as agent_tools
 from spot_train.memory.repository import WorldRepository
@@ -35,7 +35,7 @@ def _make_runner_and_handler(repo, *, spot, perception):
     handler = ToolHandlerService(
         repo, runner=runner, spot_adapter=spot, perception_adapter=perception
     )
-    agent_tools.configure(handler)
+    agent_tools.configure(handler, spot_adapter=spot)
     event_router = OperatorEventRouter(repository=repo, runner=runner)
     return runner, handler, event_router
 
@@ -95,11 +95,12 @@ def create_robot_session() -> dict:
     db_path = os.environ.get("SPOT_TRAIN_DB_PATH", "data/world.sqlite")
     repo = WorldRepository.connect(db_path, initialize=False)
     create_schema(repo.connection)
-    repo.seed_minimal_lab_world()
+    if not repo.list_places():
+        repo.seed_minimal_lab_world()
 
     spot = RealSpotAdapter.connect()
     spot.acquire_lease()
-    perception = FakePerceptionAdapter()
+    perception = RealPerceptionAdapter.from_robot(spot._robot)
     approval = FakeApprovalAdapter()
     runner, handler, event_router = _make_runner_and_handler(repo, spot=spot, perception=perception)
     _sync_navigation_bindings(repo, spot)

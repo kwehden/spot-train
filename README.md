@@ -1,80 +1,86 @@
 # spot-train
 
-Phase 0 bootstrap for a spec-driven Spot orchestration MVP.
+Memory-backed Spot task orchestration MVP: Strands agent → world model → supervisor → Spot skills.
+
+## Quick start
+
+```bash
+export SPOT_HOSTNAME=<robot-ip>
+export SPOT_USERNAME=<username>
+export SPOT_PASSWORD=<password>
+./start.sh
+```
+
+This checks the environment, bootstraps the venv, runs lint + tests, and shows next steps.
 
 ## Prerequisites
 
-The bootstrap assumes Python 3.10+ with `venv` support available. On Debian or Ubuntu, that usually means installing the matching `python3-venv` package before creating `.venv`.
+- Python 3.10+ with `venv`
+- Boston Dynamics Spot with SDK 5.1.x
+- AWS credentials with Bedrock access (Claude Sonnet 4, Nova Lite)
 
-For Spot SDK development, use a Python 3.10 virtualenv. The latest official Boston Dynamics SDK wheels currently publish PyPI classifiers through Python 3.10.
-
-## Local setup
-
-This repository assumes an in-project virtualenv.
+## Setup
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
+python3 -m venv venv
+source venv/bin/activate
+pip install -e ".[dev,spot,perception]"
+pip install "strands-agents>=1.34,<2" "strands-agents-tools>=0.3,<1" "cmd2>=3.4,<4"
 ```
 
-To include the Boston Dynamics Spot SDK packages used by this project:
+## Environment variables
 
 ```bash
-python -m pip install -e ".[dev,spot]"
+# Spot connection (required)
+export SPOT_HOSTNAME=<robot-ip>
+export SPOT_USERNAME=<username>
+export SPOT_PASSWORD=<password>
+
+# Bedrock (optional, defaults shown)
+export SPOT_TRAIN_BEDROCK_REGION=us-west-2
+export SPOT_TRAIN_BEDROCK_MODEL_ID=us.anthropic.claude-sonnet-4-20250514-v1:0
 ```
 
-The `spot` extra pins the current official SDK client packages:
+## Usage
 
-- `bosdyn-client==5.1.4`
-- `bosdyn-mission==5.1.4`
-
-Those packages pull in the matching `bosdyn-api` and `bosdyn-core` dependencies transitively.
-
-To add the Strands + Amazon Bedrock + REPL stack, install the current packages directly:
+### 1. Start e-stop (separate terminal)
 
 ```bash
-python -m pip install "strands-agents==1.34.1" "strands-agents-tools==0.3.0" "cmd2==3.4.0"
+source venv/bin/activate
+python scripts/estop_control.py
+# Press Enter to release e-stop
 ```
 
-The expected repository-level model-serving setup is:
-
-- Strands for agent orchestration
-- Amazon Bedrock for model serving
-- `cmd2` for the interactive message-loop REPL
-
-If you are wiring a local `.env`, set the Bedrock region and model identifier there.
-
-## Runtime mode
-
-Execution mode is selected through environment variables so deployment can switch between off-robot and robot-adjacent operation without code changes.
+### 2. Record a map (first time only)
 
 ```bash
-cp .env.example .env
-set -a
-. ./.env
-set +a
+python scripts/record_map.py    # WASD to walk, 'n' to name waypoints, 'x' to save
+python scripts/load_map.py      # load waypoints into world database
 ```
 
-Supported values:
+### 3. Run the agent REPL
 
-- `SPOT_TRAIN_RUNTIME_MODE=off_robot`
-- `SPOT_TRAIN_RUNTIME_MODE=robot_adjacent`
+```bash
+python scripts/run.py              # connect to real Spot (default)
+python scripts/run.py --dry-run    # fake adapters, no robot
+```
 
-## Model Serving
+### REPL commands
 
-The repository expects Strands to use Amazon Bedrock as the model-serving backend.
+| Command | Action |
+|---------|--------|
+| `poweron` | Power on motors and stand |
+| `sit` | Sit down (motors stay on) |
+| `poweroff` | Sit down and power off |
+| `status` | Show operator status |
+| `places` | List known places |
+| `stop` | Request software stop |
+| `clear` | Clear stop state |
+| `quit` | Exit and release lease |
 
-Minimum environment placeholders:
+Free-text input is sent to the Strands agent for tool-use (resolve, navigate, inspect, capture, verify).
 
-- `SPOT_TRAIN_MODEL_PROVIDER=bedrock`
-- `SPOT_TRAIN_BEDROCK_REGION=us-west-2`
-- `SPOT_TRAIN_BEDROCK_MODEL_ID=<bedrock-model-id>`
-
-Use the actual Bedrock region and model ID for your account and deployment target.
-
-## Baseline commands
+## Baseline checks
 
 ```bash
 ./scripts/format.sh
@@ -83,4 +89,14 @@ Use the actual Bedrock region and model ID for your account and deployment targe
 ./scripts/check.sh
 ```
 
-`./scripts/test.sh` treats "no tests collected" as success during bootstrap so Phase 0 can pass before the real test suite lands.
+## Architecture
+
+```
+Strands agent → typed tool layer → deterministic supervisor → Spot/perception adapters → world memory
+```
+
+- Agent reasons over named entities and typed tools, not raw SDK calls
+- Supervisor owns all side effects, retries, and state transitions
+- World memory: SQLite with spatial, semantic, and episodic layers
+- Perception: all 5 Spot cameras + depth → point clouds + Nova Lite VLM analysis
+- Stop control: separate terminal process, independent of agent loop

@@ -166,22 +166,7 @@ def test_fake_perception_adapter_verify_condition_fixtures_cover_all_verdicts() 
     assert inconclusive_result.outcome_code == OutcomeCode.INSPECTION_INCONCLUSIVE
 
 
-def test_real_perception_adapter_is_stubbed() -> None:
-    adapter = RealPerceptionAdapter()
-
-    with pytest.raises(NotImplementedError):
-        adapter.capture_evidence(
-            CaptureEvidenceRequest(
-                place_id="plc_optics_bench",
-                capture_kind="overview_image",
-            )
-        )
-
-    with pytest.raises(NotImplementedError):
-        adapter.verify_condition(
-            ConditionVerificationRequest(
-                target_type=EntityType.PLACE,
-                target_id="plc_optics_bench",
-                condition_id="condition_ready",
-            )
-        )
+def test_real_perception_adapter_requires_image_client() -> None:
+    """RealPerceptionAdapter requires an image_client to construct."""
+    with pytest.raises(TypeError):
+        RealPerceptionAdapter()
