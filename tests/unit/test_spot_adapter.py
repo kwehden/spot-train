@@ -61,9 +61,7 @@ def test_fake_spot_adapter_supports_deterministic_navigation_failure() -> None:
 
 
 def test_fake_spot_adapter_supports_relocalization_needed_mode() -> None:
-    adapter = FakeSpotAdapter(
-        default_navigation_mode=FakeSpotNavigationMode.RELOCALIZATION_NEEDED
-    )
+    adapter = FakeSpotAdapter(default_navigation_mode=FakeSpotNavigationMode.RELOCALIZATION_NEEDED)
 
     result = adapter.navigate(
         SpotNavigationIntent(place_id="plc_optics_bench", route_policy="default")

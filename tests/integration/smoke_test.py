@@ -1,4 +1,5 @@
 """End-to-end dry-run smoke test exercising Phases 0-5."""
+
 from __future__ import annotations
 
 from spot_train.adapters.approval import FakeApprovalAdapter
@@ -22,7 +23,6 @@ from spot_train.safety.terminal_estop import TerminalStopController
 from spot_train.supervisor.state_machine import SupervisorStateMachine
 from spot_train.tools.contracts import (
     GetOperatorStatusRequest,
-    ResolveTargetRequest,
 )
 from spot_train.tools.handlers import ToolHandlerService
 from spot_train.ui.ridealong import RidealongUI

@@ -17,6 +17,7 @@ if [ ! -f "$VENV_DIR/bin/activate" ]; then
     source "$VENV_DIR/bin/activate"
     python -m pip install --upgrade pip -q
     python -m pip install -e ".[dev,spot]" -q
+    python -m pip install "strands-agents>=1.34,<2" "strands-agents-tools>=0.3,<1" "cmd2>=3.4,<4" -q
     echo "✅ Virtualenv ready."
 else
     source "$VENV_DIR/bin/activate"
@@ -55,4 +56,8 @@ python -m ruff check src/ tests/ --quiet
 python -m pytest tests/ -ra --tb=short -q
 
 echo ""
-echo "✅ Stack ready. Activate with:  source $VENV_DIR/bin/activate"
+echo "✅ Stack ready. To launch the agent REPL:"
+echo ""
+echo "   source $VENV_DIR/bin/activate"
+echo "   python $REPO_DIR/scripts/run.py          # dry-run (fake adapters)"
+echo "   python $REPO_DIR/scripts/run.py --robot   # real Spot"
