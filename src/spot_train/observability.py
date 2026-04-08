@@ -82,11 +82,14 @@ class Span:
 class SpanCollector:
     """Append-only span store for testing / dry-run inspection."""
 
-    def __init__(self) -> None:
+    def __init__(self, maxlen: int | None = 10_000) -> None:
         self.spans: list[Span] = []
+        self.maxlen = maxlen
 
     def record(self, span: Span) -> None:
         self.spans.append(span)
+        if self.maxlen is not None and len(self.spans) > self.maxlen:
+            self.spans = self.spans[-self.maxlen :]
 
     def spans_for_task(self, task_id: str) -> list[Span]:
         return [s for s in self.spans if s.task_id == task_id]
