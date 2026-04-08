@@ -604,6 +604,8 @@ class RealSpotAdapter:
 
         try:
             from bosdyn.api.graph_nav import nav_pb2
+            from bosdyn.client.frame_helpers import get_odom_tform_body
+            from bosdyn.client.robot_state import RobotStateClient
 
             # Build initial guess from waypoint binding if available
             initial_guess = nav_pb2.Localization()
@@ -611,9 +613,21 @@ class RealSpotAdapter:
                 binding = self._bindings.get(intent.place_id)
                 if binding and binding.waypoint_id:
                     initial_guess.waypoint_id = binding.waypoint_id
+                    # Identity transform: assume robot is roughly at the waypoint
+                    initial_guess.waypoint_tform_body.rotation.w = 1.0
+
+            # Get current odom pose for the ko_tform_body hint
+            state_client = self._robot.ensure_client(RobotStateClient.default_service_name)
+            robot_state = state_client.get_robot_state()
+            odom_tform_body = get_odom_tform_body(
+                robot_state.kinematic_state.transforms_snapshot
+            ).to_proto()
 
             self._graph_nav.set_localization(
                 initial_guess_localization=initial_guess,
+                ko_tform_body=odom_tform_body,
+                max_distance=20.0,
+                max_yaw=3.14159,
                 fiducial_init=self._set_loc_request.FIDUCIAL_INIT_NO_FIDUCIAL,
             )
             state = self._graph_nav.get_localization_state()
