@@ -8,10 +8,13 @@ from typing import Any, Callable, Protocol
 
 from spot_train.memory.repository import WorldRepository
 from spot_train.models import OutcomeCode, StepState, Task, TaskStatus, TaskStep
+from spot_train.observability import correlation_context, get_logger, timed
 from spot_train.supervisor.policies import RecoveryAction, RecoveryPolicy
 from spot_train.supervisor.state_machine import SupervisorEvent
 
 JsonDict = dict[str, Any]
+
+_log = get_logger(__name__)
 
 
 class TransitionEngine(Protocol):
@@ -233,25 +236,30 @@ class SupervisorRunner:
             status=self._next_status(task.status, "begin_execution", TaskStatus.EXECUTING),
             started_at=started_at,
         )
+        _log.info("task %s -> %s", task.task_id, task.status.value)
 
         persisted_steps: list[TaskStep] = []
         for step in steps:
             task = self._require_task(task.task_id)
-            persisted_attempts, task = self._run_step(task, step)
+            with correlation_context(task_id=task.task_id):
+                persisted_attempts, task = self._run_step(task, step)
             persisted_steps.extend(persisted_attempts)
             if task.status in _TERMINAL_STATUSES:
+                _log.info("task %s -> %s (terminal)", task.task_id, task.status.value)
                 return TaskRunResult(task=task, final_status=task.status, steps=persisted_steps)
 
         task = self.repository.update_task_status(
             task.task_id,
             status=self._next_status(task.status, "begin_summary", TaskStatus.SUMMARIZING),
         )
+        _log.info("task %s -> %s", task.task_id, task.status.value)
         task = self.repository.update_task_status(
             task.task_id,
             status=self._next_status(task.status, "summary_completed", TaskStatus.COMPLETED),
             outcome_code=OutcomeCode.TASK_COMPLETED,
             ended_at=self.clock(),
         )
+        _log.info("task %s -> %s", task.task_id, task.status.value)
         return TaskRunResult(task=task, final_status=task.status, steps=persisted_steps)
 
     def _run_step(self, task: Task, step: SupervisorStep) -> tuple[list[TaskStep], Task]:
@@ -292,7 +300,7 @@ class SupervisorRunner:
                 )
                 return [persisted_step], task
 
-            result = step.operation(context)
+            result = self._run_step_operation(task, step, context)
             ended_at = self.clock()
             result = self._apply_timeout_if_needed(step, started_at, ended_at, result)
             persisted_step = self._persist_step(
@@ -401,6 +409,15 @@ class SupervisorRunner:
                 ended_at=ended_at,
             )
             return persisted_steps, task
+
+    def _run_step_operation(
+        self,
+        task: Task,
+        step: SupervisorStep,
+        context: ExecutionContext,
+    ) -> StepExecutionResult:
+        with timed(step.tool_name, "supervisor", task_id=task.task_id):
+            return step.operation(context)
 
     def _persist_step(
         self,
@@ -562,9 +579,7 @@ class SupervisorRunner:
             self.inconclusive_policy,
             "is_inconclusive",
         ):
-            return bool(
-                self.inconclusive_policy.is_inconclusive(result.confidence)
-            )
+            return bool(self.inconclusive_policy.is_inconclusive(result.confidence))
         return False
 
     def _require_task(self, task_id: str) -> Task:
