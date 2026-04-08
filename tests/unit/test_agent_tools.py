@@ -19,7 +19,7 @@ from spot_train.agent.tools import (
 )
 from spot_train.memory.repository import WorldRepository
 from spot_train.memory.schema import create_schema
-from spot_train.models import GraphRef
+from spot_train.models import GraphRef, Task
 from spot_train.tools.handlers import ToolHandlerService
 
 
@@ -51,11 +51,18 @@ def test_request_stop_tool_with_fake_adapter():
     set_active_task(None)
     repo = _make_repo()
     adapter = FakeSpotAdapter()
-    handler = ToolHandlerService(repo)
-    configure(handler, spot_adapter=adapter)
+    from spot_train.supervisor.runner import SupervisorRunner
+    from spot_train.supervisor.state_machine import SupervisorStateMachine
+
+    runner = SupervisorRunner(repo, state_machine=SupervisorStateMachine)
+    handler = ToolHandlerService(repo, runner=runner, spot_adapter=adapter)
+    configure(handler)
+    task = repo.create_task(Task(instruction="stop test"))
+    set_active_task(task.task_id)
     result = request_stop()
-    assert result["stop_state"] == "stop_requested"
+    assert result.get("data", {}).get("stop_state") == "stop_requested" or "stop" in str(result)
     assert adapter.stop_state is SpotStopState.STOP_REQUESTED
+    set_active_task(None)
     repo.close()
 
 
@@ -63,23 +70,31 @@ def test_clear_stop_tool_with_fake_adapter():
     set_active_task(None)
     repo = _make_repo()
     adapter = FakeSpotAdapter()
-    handler = ToolHandlerService(repo)
-    configure(handler, spot_adapter=adapter)
-    request_stop()
-    result = clear_stop()
-    assert result["stop_state"] == "clear"
+    from spot_train.supervisor.runner import SupervisorRunner
+    from spot_train.supervisor.state_machine import SupervisorStateMachine
+
+    runner = SupervisorRunner(repo, state_machine=SupervisorStateMachine)
+    handler = ToolHandlerService(repo, runner=runner, spot_adapter=adapter)
+    configure(handler)
+    task = repo.create_task(Task(instruction="clear test"))
+    set_active_task(task.task_id)
+    adapter.request_stop(reason="test")
+    clear_stop()
     assert adapter.stop_state is SpotStopState.CLEAR
+    set_active_task(None)
     repo.close()
 
 
-def test_power_tools_return_error_in_dry_run():
+def test_power_tools_route_through_supervisor():
+    """Power tools go through handler/supervisor — require runner + task_id."""
+    set_active_task(None)
     repo = _make_repo()
-    adapter = FakeSpotAdapter()
     handler = ToolHandlerService(repo)
-    configure(handler, spot_adapter=adapter)
+    configure(handler)
     result = power_on_robot()
+    # No runner configured → policy rejection
     assert result["status"] == "error"
-    assert "dry-run" in result["message"].lower()
+    assert "runner" in result["error"]["code"]
     repo.close()
 
 

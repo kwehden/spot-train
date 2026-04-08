@@ -228,6 +228,28 @@ ResponseLike = (
 )
 
 
+class PowerOnRequest(ToolRequest):
+    """Request to power on the robot and stand."""
+
+
+class SitRequest(ToolRequest):
+    """Request to sit the robot down."""
+
+
+class PowerOffRequest(ToolRequest):
+    """Request to sit and power off the robot."""
+
+
+class RequestStopRequest(ToolRequest):
+    """Request a software stop."""
+
+    reason: str = "operator-requested"
+
+
+class ClearStopRequest(ToolRequest):
+    """Request to clear the software stop state."""
+
+
 REQUEST_MODEL_BY_TOOL: dict[str, type[ToolRequest]] = {
     "resolve_target": ResolveTargetRequest,
     "get_place_context": GetPlaceContextRequest,
@@ -238,6 +260,11 @@ REQUEST_MODEL_BY_TOOL: dict[str, type[ToolRequest]] = {
     "relocalize": RelocalizeRequest,
     "get_operator_status": GetOperatorStatusRequest,
     "summarize_task": SummarizeTaskRequest,
+    "power_on": PowerOnRequest,
+    "sit": SitRequest,
+    "power_off": PowerOffRequest,
+    "request_stop": RequestStopRequest,
+    "clear_stop": ClearStopRequest,
 }
 
 

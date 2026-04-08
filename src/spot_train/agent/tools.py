@@ -9,15 +9,13 @@ from strands import tool
 from spot_train.tools.handlers import ToolHandlerService
 
 _handler: ToolHandlerService | None = None
-_spot_adapter: Any = None
 _active_task_id: str | None = None
 
 
-def configure(handler: ToolHandlerService, *, spot_adapter: Any = None) -> None:
-    """Set the shared handler and adapter instances for all tools."""
-    global _handler, _spot_adapter
+def configure(handler: ToolHandlerService, **_kwargs: Any) -> None:
+    """Set the shared handler instance for all tools."""
+    global _handler
     _handler = handler
-    _spot_adapter = spot_adapter
 
 
 def set_active_task(task_id: str | None) -> None:
@@ -203,24 +201,6 @@ def summarize_task(task_id: str | None = None) -> dict:
     return h.handle("summarize_task", {"task_id": tid}).model_dump()
 
 
-def _persist_operator_event(event_type: Any, details: dict | None = None) -> None:
-    """Persist an operator event through the handler's repository (best-effort)."""
-    from spot_train.models import ModelSource, OperatorEvent
-
-    try:
-        h = _require_handler()
-        h.repository.create_operator_event(
-            OperatorEvent(
-                task_id=_active_task_id,
-                event_type=event_type,
-                source=ModelSource.AGENT,
-                details_json=details or {},
-            )
-        )
-    except Exception:
-        pass  # best-effort — don't fail the tool call over audit persistence
-
-
 @tool
 def power_on_robot() -> dict:
     """Power on the robot's motors and stand up.
@@ -228,24 +208,8 @@ def power_on_robot() -> dict:
     Returns:
         Status message confirming power on and standing.
     """
-    from spot_train.models import OperatorEventType
-
-    if _spot_adapter is None or not hasattr(_spot_adapter, "_robot"):
-        return {"status": "error", "message": "No robot connected (dry-run mode)."}
-    try:
-        import time
-
-        from bosdyn.client.robot_command import RobotCommandBuilder, RobotCommandClient
-
-        _spot_adapter._robot.power_on(timeout_sec=20)
-        cmd_client = _spot_adapter._robot.ensure_client(RobotCommandClient.default_service_name)
-        cmd_client.robot_command(RobotCommandBuilder.synchro_stand_command(), timeout=10)
-        time.sleep(1)
-        _persist_operator_event(OperatorEventType.POWER_ON, {"result": "success"})
-        return {"status": "success", "message": "Robot powered on and standing."}
-    except Exception as exc:
-        _persist_operator_event(OperatorEventType.POWER_ON, {"result": "error", "error": str(exc)})
-        return {"status": "error", "message": f"Power on failed: {exc}"}
+    h = _require_handler()
+    return h.handle("power_on", {}, task_id=_active_task_id).model_dump()
 
 
 @tool
@@ -255,20 +219,8 @@ def sit_robot() -> dict:
     Returns:
         Status message confirming the robot is sitting.
     """
-    from spot_train.models import OperatorEventType
-
-    if _spot_adapter is None or not hasattr(_spot_adapter, "_robot"):
-        return {"status": "error", "message": "No robot connected (dry-run mode)."}
-    try:
-        from bosdyn.client.robot_command import RobotCommandBuilder, RobotCommandClient
-
-        cmd_client = _spot_adapter._robot.ensure_client(RobotCommandClient.default_service_name)
-        cmd_client.robot_command(RobotCommandBuilder.synchro_sit_command(), timeout=10)
-        _persist_operator_event(OperatorEventType.SIT, {"result": "success"})
-        return {"status": "success", "message": "Robot is sitting. Motors still on."}
-    except Exception as exc:
-        _persist_operator_event(OperatorEventType.SIT, {"result": "error", "error": str(exc)})
-        return {"status": "error", "message": f"Sit failed: {exc}"}
+    h = _require_handler()
+    return h.handle("sit", {}, task_id=_active_task_id).model_dump()
 
 
 @tool
@@ -278,44 +230,22 @@ def power_off_robot() -> dict:
     Returns:
         Status message confirming power off.
     """
-    from spot_train.models import OperatorEventType
-
-    if _spot_adapter is None or not hasattr(_spot_adapter, "_robot"):
-        return {"status": "error", "message": "No robot connected (dry-run mode)."}
-    try:
-        import time
-
-        from bosdyn.client.robot_command import RobotCommandBuilder, RobotCommandClient
-
-        cmd_client = _spot_adapter._robot.ensure_client(RobotCommandClient.default_service_name)
-        cmd_client.robot_command(RobotCommandBuilder.synchro_sit_command(), timeout=10)
-        time.sleep(2)
-        _spot_adapter._robot.power_off(cut_immediately=False, timeout_sec=20)
-        _persist_operator_event(OperatorEventType.POWER_OFF, {"result": "success"})
-        return {"status": "success", "message": "Robot sat down and powered off."}
-    except Exception as exc:
-        _persist_operator_event(OperatorEventType.POWER_OFF, {"result": "error", "error": str(exc)})
-        return {"status": "error", "message": f"Power off failed: {exc}"}
+    h = _require_handler()
+    return h.handle("power_off", {}, task_id=_active_task_id).model_dump()
 
 
 @tool
-def request_stop() -> dict:
+def request_stop(reason: str = "operator-requested") -> dict:
     """Request an immediate software stop, halting all robot motion.
+
+    Args:
+        reason: Reason for the stop request.
 
     Returns:
         Stop state confirmation.
     """
-    from spot_train.models import OperatorEventType
-
-    if _spot_adapter is None:
-        return {"status": "error", "message": "No adapter available."}
-    outcome = _spot_adapter.request_stop(reason="agent-requested stop")
-    _persist_operator_event(OperatorEventType.STOP_REQUESTED, {"reason": "agent-requested stop"})
-    return {
-        "status": "success",
-        "stop_state": outcome.stop_state.value,
-        "message": outcome.message,
-    }
+    h = _require_handler()
+    return h.handle("request_stop", {"reason": reason}, task_id=_active_task_id).model_dump()
 
 
 @tool
@@ -325,14 +255,8 @@ def clear_stop() -> dict:
     Returns:
         Stop state confirmation.
     """
-    if _spot_adapter is None:
-        return {"status": "error", "message": "No adapter available."}
-    outcome = _spot_adapter.clear_stop()
-    return {
-        "status": "success",
-        "stop_state": outcome.stop_state.value,
-        "message": outcome.message,
-    }
+    h = _require_handler()
+    return h.handle("clear_stop", {}, task_id=_active_task_id).model_dump()
 
 
 def all_tools() -> list:
