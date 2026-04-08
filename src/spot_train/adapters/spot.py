@@ -153,14 +153,10 @@ class FakeSpotAdapter:
     """Deterministic adapter used for local development and tests."""
 
     default_navigation_mode: FakeSpotNavigationMode = FakeSpotNavigationMode.SUCCESS
-    default_relocalization_mode: FakeSpotRelocalizationMode = (
-        FakeSpotRelocalizationMode.SUCCESS
-    )
+    default_relocalization_mode: FakeSpotRelocalizationMode = FakeSpotRelocalizationMode.SUCCESS
     default_navigation_surface: SpotNavigationSurface = SpotNavigationSurface.WAYPOINT
     navigation_bindings: dict[str, SpotNavigationBinding] = field(default_factory=dict)
-    navigation_modes_by_place_id: dict[str, FakeSpotNavigationMode] = field(
-        default_factory=dict
-    )
+    navigation_modes_by_place_id: dict[str, FakeSpotNavigationMode] = field(default_factory=dict)
     relocalization_modes_by_place_id: dict[str, FakeSpotRelocalizationMode] = field(
         default_factory=dict
     )
@@ -337,29 +333,267 @@ class FakeSpotAdapter:
 
 
 class RealSpotAdapter:
-    """Future SDK-backed Spot adapter boundary.
+    """SDK-backed Spot adapter using the estop_control.py connection pattern.
 
-    This class is intentionally stubbed until the dry-run validation phase.
+    Expects the e-stop keepalive to be running in a separate process.
+    This adapter does NOT own the e-stop endpoint — it only navigates,
+    relocalizes, and exposes a software stop flag for the supervisor.
     """
 
+    def __init__(self, robot: Any, *, lease_client: Any = None) -> None:
+        from bosdyn.api.graph_nav import graph_nav_pb2
+        from bosdyn.client.graph_nav import GraphNavClient
+
+        self._robot = robot
+        self._graph_nav: Any = robot.ensure_client(GraphNavClient.default_service_name)
+        self._lease_client = lease_client
+        self._feedback_status = graph_nav_pb2.NavigationFeedbackResponse.Status
+        self._stop_state = SpotStopState.CLEAR
+        self._last_stop_reason: str | None = None
+        self._bindings: dict[str, SpotNavigationBinding] = {}
+
+    # -- factory ----------------------------------------------------------
+
+    @classmethod
+    def connect(cls, config: Any | None = None) -> "RealSpotAdapter":
+        """Create an adapter using the estop_control.py connection pattern."""
+        import bosdyn.client
+        import bosdyn.client.util
+        from bosdyn.client.lease import LeaseClient
+
+        if config is None:
+            from spot_train.config import SpotConnectionConfig
+
+            config = SpotConnectionConfig.from_env()
+
+        import os
+
+        os.environ.setdefault("BOSDYN_CLIENT_USERNAME", config.username)
+        os.environ.setdefault("BOSDYN_CLIENT_PASSWORD", config.password)
+
+        sdk = bosdyn.client.create_standard_sdk("spot_train")
+        robot = sdk.create_robot(config.hostname)
+        bosdyn.client.util.authenticate(robot)
+        robot.sync_with_directory()
+        robot.time_sync.wait_for_sync()
+
+        lease_client = robot.ensure_client(LeaseClient.default_service_name)
+        return cls(robot, lease_client=lease_client)
+
+    # -- binding registry -------------------------------------------------
+
+    def register_navigation_binding(self, binding: SpotNavigationBinding) -> None:
+        self._bindings[binding.place_id] = binding
+
     def map_navigation_intent(self, intent: SpotNavigationIntent) -> SpotNavigationBinding:
-        raise NotImplementedError("Real Spot adapter is not implemented yet.")
+        binding = self._bindings.get(intent.place_id)
+        if binding is not None:
+            return binding
+        return SpotNavigationBinding(
+            place_id=intent.place_id,
+            surface=SpotNavigationSurface.WAYPOINT,
+        )
+
+    # -- navigation -------------------------------------------------------
 
     def navigate(self, intent: SpotNavigationIntent) -> SpotNavigationOutcome:
-        raise NotImplementedError("Real Spot adapter is not implemented yet.")
+        import time
+
+        if self._stop_state == SpotStopState.STOP_REQUESTED:
+            return SpotNavigationOutcome(
+                status=SpotActionStatus.CANCELLED,
+                outcome_code=OutcomeCode.TASK_CANCELLED,
+                message="Navigation aborted — stop control is active.",
+                target_place_id=intent.place_id,
+                route_policy=intent.route_policy,
+                stop_state=self._stop_state,
+                recommended_action="await_operator_clear",
+            )
+
+        binding = self.map_navigation_intent(intent)
+        waypoint_id = binding.waypoint_id
+        if not waypoint_id:
+            return SpotNavigationOutcome(
+                status=SpotActionStatus.FAILED,
+                outcome_code=OutcomeCode.NAVIGATION_FAILED,
+                message=f"No waypoint_id bound for {intent.place_id}.",
+                target_place_id=intent.place_id,
+                route_policy=intent.route_policy,
+                recommended_action="register_navigation_binding",
+            )
+
+        timeout_s = intent.timeout_s or 30
+        try:
+            cmd_id = self._graph_nav.navigate_to(
+                waypoint_id,
+                cmd_duration=timeout_s,
+            )
+        except Exception as exc:
+            return SpotNavigationOutcome(
+                status=SpotActionStatus.FAILED,
+                outcome_code=OutcomeCode.NAVIGATION_FAILED,
+                message=f"navigate_to raised: {exc}",
+                target_place_id=intent.place_id,
+                route_policy=intent.route_policy,
+                recommended_action="abort_or_retry",
+            )
+
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if self._stop_state == SpotStopState.STOP_REQUESTED:
+                return SpotNavigationOutcome(
+                    status=SpotActionStatus.CANCELLED,
+                    outcome_code=OutcomeCode.TASK_CANCELLED,
+                    message="Navigation interrupted by stop request.",
+                    target_place_id=intent.place_id,
+                    route_policy=intent.route_policy,
+                    stop_state=self._stop_state,
+                    recommended_action="await_operator_clear",
+                )
+
+            feedback = self._graph_nav.navigation_feedback(cmd_id)
+            status = feedback.status
+
+            if status == self._feedback_status.Value("STATUS_REACHED_GOAL"):
+                return SpotNavigationOutcome(
+                    status=SpotActionStatus.SUCCEEDED,
+                    outcome_code=OutcomeCode.NAVIGATION_SUCCEEDED,
+                    message=f"Reached {intent.place_id}.",
+                    target_place_id=intent.place_id,
+                    route_policy=intent.route_policy,
+                    navigation_surface=binding.surface,
+                    confidence=1.0,
+                    recommended_action="continue",
+                )
+
+            if status in (
+                self._feedback_status.Value("STATUS_NO_LOCALIZATION"),
+                self._feedback_status.Value("STATUS_LOST"),
+                self._feedback_status.Value("STATUS_NOT_LOCALIZED_TO_ROUTE"),
+            ):
+                return SpotNavigationOutcome(
+                    status=SpotActionStatus.RELOCALIZATION_NEEDED,
+                    outcome_code=OutcomeCode.RELOCALIZATION_REQUIRED,
+                    message="Robot lost localization during navigation.",
+                    target_place_id=intent.place_id,
+                    route_policy=intent.route_policy,
+                    navigation_surface=binding.surface,
+                    relocalization_required=True,
+                    confidence=0.3,
+                    recommended_action="relocalize_then_retry",
+                )
+
+            if status in (
+                self._feedback_status.Value("STATUS_NO_ROUTE"),
+                self._feedback_status.Value("STATUS_STUCK"),
+                self._feedback_status.Value("STATUS_ROBOT_IMPAIRED"),
+                self._feedback_status.Value("STATUS_CONSTRAINT_FAULT"),
+                self._feedback_status.Value("STATUS_LEASE_ERROR"),
+                self._feedback_status.Value("STATUS_AREA_CALLBACK_ERROR"),
+            ):
+                return SpotNavigationOutcome(
+                    status=SpotActionStatus.FAILED,
+                    outcome_code=OutcomeCode.NAVIGATION_FAILED,
+                    message=f"Navigation failed with status {status}.",
+                    target_place_id=intent.place_id,
+                    route_policy=intent.route_policy,
+                    navigation_surface=binding.surface,
+                    confidence=0.0,
+                    recommended_action="abort_or_retry",
+                )
+
+            if status == self._feedback_status.Value("STATUS_COMMAND_OVERRIDDEN"):
+                return SpotNavigationOutcome(
+                    status=SpotActionStatus.CANCELLED,
+                    outcome_code=OutcomeCode.TASK_CANCELLED,
+                    message="Navigation command was overridden.",
+                    target_place_id=intent.place_id,
+                    route_policy=intent.route_policy,
+                    recommended_action="abort_or_retry",
+                )
+
+            # STATUS_FOLLOWING_ROUTE or STATUS_UNKNOWN — keep polling
+            time.sleep(0.5)
+
+        return SpotNavigationOutcome(
+            status=SpotActionStatus.FAILED,
+            outcome_code=OutcomeCode.NAVIGATION_FAILED,
+            message=f"Navigation timed out after {timeout_s}s.",
+            target_place_id=intent.place_id,
+            route_policy=intent.route_policy,
+            recommended_action="abort_or_retry",
+        )
+
+    # -- relocalization ---------------------------------------------------
 
     def relocalize(self, intent: SpotRelocalizeIntent) -> SpotRelocalizationOutcome:
-        raise NotImplementedError("Real Spot adapter is not implemented yet.")
+        if self._stop_state == SpotStopState.STOP_REQUESTED:
+            return SpotRelocalizationOutcome(
+                status=SpotActionStatus.CANCELLED,
+                outcome_code=OutcomeCode.TASK_CANCELLED,
+                message="Relocalization aborted — stop control is active.",
+                strategy=intent.strategy,
+                place_id=intent.place_id,
+                stop_state=self._stop_state,
+                recommended_action="await_operator_clear",
+            )
+
+        try:
+            state = self._graph_nav.get_localization_state()
+            if state.localization.waypoint_id:
+                return SpotRelocalizationOutcome(
+                    status=SpotActionStatus.SUCCEEDED,
+                    outcome_code=OutcomeCode.RELOCALIZATION_SUCCEEDED,
+                    message=f"Localized at waypoint {state.localization.waypoint_id}.",
+                    strategy=intent.strategy,
+                    place_id=intent.place_id,
+                    confidence=0.9,
+                    recommended_action="retry_navigation",
+                )
+            return SpotRelocalizationOutcome(
+                status=SpotActionStatus.FAILED,
+                outcome_code=OutcomeCode.RELOCALIZATION_FAILED,
+                message="No localization waypoint returned.",
+                strategy=intent.strategy,
+                place_id=intent.place_id,
+                confidence=0.0,
+                recommended_action="request_operator_assistance",
+            )
+        except Exception as exc:
+            return SpotRelocalizationOutcome(
+                status=SpotActionStatus.FAILED,
+                outcome_code=OutcomeCode.RELOCALIZATION_FAILED,
+                message=f"Relocalization error: {exc}",
+                strategy=intent.strategy,
+                place_id=intent.place_id,
+                confidence=0.0,
+                recommended_action="request_operator_assistance",
+            )
+
+    # -- stop control (software layer) ------------------------------------
 
     def request_stop(self, *, reason: str | None = None) -> SpotStopOutcome:
-        raise NotImplementedError("Real Spot adapter is not implemented yet.")
+        self._stop_state = SpotStopState.STOP_REQUESTED
+        self._last_stop_reason = reason
+        return SpotStopOutcome(
+            stop_state=self._stop_state,
+            acknowledged=True,
+            message="Stop request acknowledged.",
+            reason=reason,
+        )
 
     def clear_stop(self) -> SpotStopOutcome:
-        raise NotImplementedError("Real Spot adapter is not implemented yet.")
+        self._stop_state = SpotStopState.CLEAR
+        self._last_stop_reason = None
+        return SpotStopOutcome(
+            stop_state=self._stop_state,
+            acknowledged=True,
+            message="Stop state cleared.",
+        )
 
     @property
     def stop_state(self) -> SpotStopState:
-        raise NotImplementedError("Real Spot adapter is not implemented yet.")
+        return self._stop_state
 
 
 __all__ = [
