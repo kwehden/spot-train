@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import collections
 import io
+import logging
 import threading
 import time
 import tkinter as tk
@@ -16,6 +17,8 @@ from typing import Any, Callable
 
 import numpy as np
 from PIL import Image, ImageTk
+
+_log = logging.getLogger("spot_train.viewer")
 
 # Camera sources in grid order: row1 (FL, FR, Back), row2 (Left, Right)
 CAMERA_SOURCES = [
@@ -294,6 +297,8 @@ class SpotTrainViewer:
 
             except Exception:
                 consecutive_errors += 1
+                if consecutive_errors == 1 or consecutive_errors % 10 == 0:
+                    _log.warning("Viewer video error (count=%d)", consecutive_errors, exc_info=True)
                 time.sleep(min(consecutive_errors, 10))
                 continue
             time.sleep(0.5)

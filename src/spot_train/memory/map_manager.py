@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import threading
@@ -13,6 +14,9 @@ from spot_train.adapters.spot import (
 )
 from spot_train.memory.repository import WorldRepository
 from spot_train.models import AliasType, GraphRef, Place, PlaceAlias
+
+_log = logging.getLogger("spot_train.map_manager")
+_STOP_SENTINEL = "__stop__"
 
 
 class MapManager:
@@ -43,9 +47,17 @@ class MapManager:
         self._save_thread.start()
 
     def stop(self) -> None:
-        """Flush pending saves and stop the background thread."""
-        self._save_queue.put("__stop__")
+        """Flush pending saves and stop the background thread.
+
+        Sends a stop sentinel to the save queue and waits up to 10 seconds
+        for the thread to finish any in-flight save. If the thread does not
+        terminate within the timeout, it is abandoned (daemon thread will be
+        cleaned up on process exit).
+        """
+        self._save_queue.put(_STOP_SENTINEL)
         self._save_thread.join(timeout=10)
+        if self._save_thread.is_alive():
+            _log.warning("Map save thread did not terminate within 10s")
 
     # -- Public API -------------------------------------------------------
 
@@ -237,7 +249,7 @@ class MapManager:
                 edge.id.to_waypoint = new_wp_id
                 self._rec.create_edge(edge=edge)
         except Exception:
-            pass  # best-effort
+            _log.debug("Auto-edge creation failed (best-effort)", exc_info=True)
 
     def _upload_if_needed(self) -> None:
         """Upload saved graph if robot has none loaded."""
@@ -307,14 +319,14 @@ class MapManager:
             except queue.Empty:
                 continue
 
-            if msg == "__stop__":
+            if msg == _STOP_SENTINEL:
                 return
 
             # Drain any additional queued saves
             while not self._save_queue.empty():
                 try:
                     m = self._save_queue.get_nowait()
-                    if m == "__stop__":
+                    if m == _STOP_SENTINEL:
                         return
                 except queue.Empty:
                     break
@@ -351,4 +363,4 @@ class MapManager:
                         except Exception:
                             pass
             except Exception:
-                pass  # best-effort save
+                _log.exception("Graph save to disk failed")
