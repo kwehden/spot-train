@@ -73,12 +73,12 @@ def test_local_scene_is_blocked_backward():
 
 
 def test_quadrant_from_depth():
+    # Use values > 300mm to pass the ground-plane filter
     arr = np.array(
-        [[100, 200, 300, 400, 500, 600], [150, 250, 350, 450, 550, 650], [0, 0, 0, 0, 0, 0]],
+        [[400, 500, 600, 700, 800, 900], [450, 550, 650, 750, 850, 950], [0, 0, 0, 0, 0, 0]],
         dtype=np.uint16,
     )
+    # Top 60% of 3 rows = first 1 row (int(3*0.6)=1), cols 0:3 = [400, 500, 600]
     q = _quadrant_from_depth(arr, 0, 3)
-    # Left half: values 100,200,300,150,250,350 — valid (>50): all 6
-    # Bottom row is 0 so invalid — 3 zeros in cols 0:3
-    assert q.min_mm == 100
-    assert q.coverage > 0  # 6 valid out of 9 total
+    assert q.min_mm == 400
+    assert q.coverage > 0

@@ -112,7 +112,7 @@ class SpotTrainREPL(cmd2.Cmd):
 
     def default(self, statement: cmd2.Statement) -> None:
         """Create a supervised task and send the instruction to the agent."""
-        text = str(statement).strip()
+        text = statement.raw.strip() if hasattr(statement, "raw") else str(statement).strip()
         if not text:
             return
 

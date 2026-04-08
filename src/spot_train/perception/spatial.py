@@ -96,9 +96,16 @@ _POLL_SOURCES = [
 
 
 def _quadrant_from_depth(depth_mm: np.ndarray, col_start: int, col_end: int) -> QuadrantDepth:
-    """Compute depth stats for a column slice of a depth image."""
-    region = depth_mm[:, col_start:col_end]
-    valid = region[region > 50]
+    """Compute depth stats for a column slice of a depth image.
+
+    Uses only the top 60% of rows to exclude ground-plane readings
+    from the downward-angled cameras. Minimum valid depth is 300mm
+    to filter out noise and near-field ground reflections.
+    """
+    # Exclude bottom 40% of image (ground plane at camera tilt angle)
+    row_cutoff = int(depth_mm.shape[0] * 0.6)
+    region = depth_mm[:row_cutoff, col_start:col_end]
+    valid = region[region > 300]
     if valid.size == 0:
         return QuadrantDepth()
     return QuadrantDepth(
