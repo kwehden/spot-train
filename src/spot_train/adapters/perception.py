@@ -323,7 +323,10 @@ class RealPerceptionAdapter:
         task_dir = os.path.join(self._artifact_dir, task_id or "no_task")
         os.makedirs(task_dir, exist_ok=True)
 
-        for img_response in images:
+        # Sort: fisheye images first so intrinsics are available for depth
+        images_sorted = sorted(images, key=lambda r: 1 if "depth" in r.source.name else 0)
+
+        for img_response in images_sorted:
             source_name = img_response.source.name
             position = source_map.get(source_name, "unknown")
             if position not in captures:
@@ -400,20 +403,31 @@ class RealPerceptionAdapter:
                 captures[position]["depth"] = entry
             else:
                 captures[position]["image"] = entry
-                try:
-                    import cv2
-
-                    arr = cv2.imdecode(
-                        _np.frombuffer(data, dtype=_np.uint8),
-                        cv2.IMREAD_COLOR,
-                    )
-                    if arr is not None:
-                        _, jpeg = cv2.imencode(".jpg", arr)
-                        captures[position]["image_b64"] = base64.b64encode(jpeg.tobytes()).decode()
-                    else:
-                        captures[position]["image_b64"] = base64.b64encode(data).decode()
-                except ImportError:
+                # Detect actual format via JPEG magic bytes
+                is_jpeg = data[:2] == b"\xff\xd8"
+                if is_jpeg:
                     captures[position]["image_b64"] = base64.b64encode(data).decode()
+                    captures[position]["image_format"] = "jpeg"
+                else:
+                    try:
+                        import cv2
+
+                        # Try imdecode first (handles PNG, etc.)
+                        arr = cv2.imdecode(
+                            _np.frombuffer(data, dtype=_np.uint8),
+                            cv2.IMREAD_COLOR,
+                        )
+                        if arr is None and len(data) == rows * cols:
+                            # Raw greyscale U8
+                            arr = _np.frombuffer(data, dtype=_np.uint8).reshape(rows, cols)
+                        if arr is not None:
+                            _, jpeg = cv2.imencode(".jpg", arr)
+                            captures[position]["image_b64"] = base64.b64encode(
+                                jpeg.tobytes()
+                            ).decode()
+                            captures[position]["image_format"] = "jpeg"
+                    except ImportError:
+                        pass  # skip VLM for this camera if no cv2
 
         return captures
 
@@ -472,11 +486,11 @@ class RealPerceptionAdapter:
 
         captures = self._capture_all_cameras(request.task_id, request.place_id)
 
-        # Build image list for VLM (all cameras that have images)
+        # Build image list for VLM (only verified JPEG images)
         image_list: list[tuple[str, str]] = []
         for position, data in sorted(captures.items()):
             b64 = data.get("image_b64")
-            if b64:
+            if b64 and data.get("image_format") == "jpeg":
                 orientation = data.get("orientation", "unknown")
                 image_list.append((f"{position} ({orientation})", b64))
 
@@ -554,7 +568,7 @@ class RealPerceptionAdapter:
         image_list: list[tuple[str, str]] = []
         for position, data in sorted(captures.items()):
             b64 = data.get("image_b64")
-            if b64:
+            if b64 and data.get("image_format") == "jpeg":
                 orientation = data.get("orientation", "unknown")
                 image_list.append((f"{position} ({orientation})", b64))
 

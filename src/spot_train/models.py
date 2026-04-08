@@ -131,6 +131,9 @@ class OperatorEventType(StringEnum):
     APPROVAL_DENIED = "approval_denied"
     STOP_REQUESTED = "stop_requested"
     TASK_CANCEL_REQUESTED = "task_cancel_requested"
+    POWER_ON = "power_on"
+    POWER_OFF = "power_off"
+    SIT = "sit"
 
 
 class ModelSource(StringEnum):

@@ -48,6 +48,7 @@ def test_resolve_target_passes_task_id():
 
 
 def test_request_stop_tool_with_fake_adapter():
+    set_active_task(None)
     repo = _make_repo()
     adapter = FakeSpotAdapter()
     handler = ToolHandlerService(repo)
@@ -59,6 +60,7 @@ def test_request_stop_tool_with_fake_adapter():
 
 
 def test_clear_stop_tool_with_fake_adapter():
+    set_active_task(None)
     repo = _make_repo()
     adapter = FakeSpotAdapter()
     handler = ToolHandlerService(repo)
