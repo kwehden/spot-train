@@ -50,10 +50,45 @@ class SpotTrainREPL(cmd2.Cmd):
 
     def __init__(self, session: dict, agent: object, **kwargs):
         super().__init__(allow_cli_args=False, **kwargs)
-        self.prompt = "spot> "
         self.session = session
         self.agent = agent
+        self._robot_name = self._get_robot_name()
+        self.prompt = self._build_prompt()
         self.hidden_commands.extend(["alias", "macro", "run_script", "shell", "shortcuts"])
+
+    def _get_robot_name(self) -> str:
+        adapter = self.session.get("spot_adapter")
+        if adapter and hasattr(adapter, "_robot"):
+            try:
+                return adapter._robot.get_id().nickname or "spot"
+            except Exception:
+                pass
+        return "spot"
+
+    def _get_battery_pct(self) -> int | None:
+        adapter = self.session.get("spot_adapter")
+        if adapter and hasattr(adapter, "_robot"):
+            try:
+                from bosdyn.client.robot_state import RobotStateClient
+
+                sc = adapter._robot.ensure_client(RobotStateClient.default_service_name)
+                state = sc.get_robot_state()
+                return int(state.power_state.locomotion_charge_percentage.value)
+            except Exception:
+                pass
+        return None
+
+    def _build_prompt(self) -> str:
+        name = self._robot_name.lower()
+        pct = self._get_battery_pct()
+        if pct is not None:
+            return f"{name}({pct}%)> "
+        return f"{name}> "
+
+    def postcmd(self, stop: bool, line: str) -> bool:
+        """Refresh the prompt with current battery after each command."""
+        self.prompt = self._build_prompt()
+        return stop
 
     def default(self, statement: cmd2.Statement) -> None:
         """Create a supervised task and send the instruction to the agent."""
