@@ -336,18 +336,24 @@ class RealSpotAdapter:
     """SDK-backed Spot adapter using the estop_control.py connection pattern.
 
     Expects the e-stop keepalive to be running in a separate process.
-    This adapter does NOT own the e-stop endpoint — it only navigates,
-    relocalizes, and exposes a software stop flag for the supervisor.
+    This adapter does NOT own the e-stop endpoint — it manages a body
+    lease for motion commands, sends stop commands to halt the robot,
+    and uses GraphNav for navigation and localization recovery.
     """
 
     def __init__(self, robot: Any, *, lease_client: Any = None) -> None:
         from bosdyn.api.graph_nav import graph_nav_pb2
         from bosdyn.client.graph_nav import GraphNavClient
+        from bosdyn.client.robot_command import RobotCommandBuilder, RobotCommandClient
 
         self._robot = robot
         self._graph_nav: Any = robot.ensure_client(GraphNavClient.default_service_name)
+        self._command_client: Any = robot.ensure_client(RobotCommandClient.default_service_name)
         self._lease_client = lease_client
+        self._lease_keepalive: Any | None = None
         self._feedback_status = graph_nav_pb2.NavigationFeedbackResponse.Status
+        self._set_loc_request = graph_nav_pb2.SetLocalizationRequest
+        self._stop_command_builder = RobotCommandBuilder.stop_command
         self._stop_state = SpotStopState.CLEAR
         self._last_stop_reason: str | None = None
         self._bindings: dict[str, SpotNavigationBinding] = {}
@@ -380,6 +386,33 @@ class RealSpotAdapter:
         lease_client = robot.ensure_client(LeaseClient.default_service_name)
         return cls(robot, lease_client=lease_client)
 
+    # -- lease management -------------------------------------------------
+
+    def acquire_lease(self) -> None:
+        """Acquire the body lease and start keepalive.
+
+        Must be called before any motion command. The keepalive thread
+        automatically renews the lease until ``release_lease()`` is called.
+        """
+        from bosdyn.client.lease import LeaseKeepAlive
+
+        if self._lease_keepalive is not None:
+            return  # already held
+        self._lease_client.take()
+        self._lease_keepalive = LeaseKeepAlive(
+            self._lease_client, must_acquire=True, return_at_exit=True
+        )
+
+    def release_lease(self) -> None:
+        """Release the body lease and stop keepalive."""
+        if self._lease_keepalive is not None:
+            self._lease_keepalive.shutdown()
+            self._lease_keepalive = None
+
+    @property
+    def has_lease(self) -> bool:
+        return self._lease_keepalive is not None
+
     # -- binding registry -------------------------------------------------
 
     def register_navigation_binding(self, binding: SpotNavigationBinding) -> None:
@@ -393,6 +426,16 @@ class RealSpotAdapter:
             place_id=intent.place_id,
             surface=SpotNavigationSurface.WAYPOINT,
         )
+
+    # -- robot stop (sends command to halt motion) ------------------------
+
+    def _send_stop_to_robot(self) -> None:
+        """Send a stop command to the robot to halt all motion."""
+        try:
+            cmd = self._stop_command_builder()
+            self._command_client.robot_command(cmd)
+        except Exception:
+            pass  # best-effort; hardware e-stop is the safety backstop
 
     # -- navigation -------------------------------------------------------
 
@@ -422,6 +465,16 @@ class RealSpotAdapter:
                 recommended_action="register_navigation_binding",
             )
 
+        if not self.has_lease:
+            return SpotNavigationOutcome(
+                status=SpotActionStatus.FAILED,
+                outcome_code=OutcomeCode.NAVIGATION_FAILED,
+                message="No body lease held. Call acquire_lease() first.",
+                target_place_id=intent.place_id,
+                route_policy=intent.route_policy,
+                recommended_action="acquire_lease",
+            )
+
         timeout_s = intent.timeout_s or 30
         try:
             cmd_id = self._graph_nav.navigate_to(
@@ -441,10 +494,11 @@ class RealSpotAdapter:
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             if self._stop_state == SpotStopState.STOP_REQUESTED:
+                self._send_stop_to_robot()
                 return SpotNavigationOutcome(
                     status=SpotActionStatus.CANCELLED,
                     outcome_code=OutcomeCode.TASK_CANCELLED,
-                    message="Navigation interrupted by stop request.",
+                    message="Navigation interrupted — stop command sent to robot.",
                     target_place_id=intent.place_id,
                     route_policy=intent.route_policy,
                     stop_state=self._stop_state,
@@ -471,10 +525,11 @@ class RealSpotAdapter:
                 self._feedback_status.Value("STATUS_LOST"),
                 self._feedback_status.Value("STATUS_NOT_LOCALIZED_TO_ROUTE"),
             ):
+                self._send_stop_to_robot()
                 return SpotNavigationOutcome(
                     status=SpotActionStatus.RELOCALIZATION_NEEDED,
                     outcome_code=OutcomeCode.RELOCALIZATION_REQUIRED,
-                    message="Robot lost localization during navigation.",
+                    message="Robot lost localization — stop command sent.",
                     target_place_id=intent.place_id,
                     route_policy=intent.route_policy,
                     navigation_surface=binding.surface,
@@ -491,10 +546,11 @@ class RealSpotAdapter:
                 self._feedback_status.Value("STATUS_LEASE_ERROR"),
                 self._feedback_status.Value("STATUS_AREA_CALLBACK_ERROR"),
             ):
+                self._send_stop_to_robot()
                 return SpotNavigationOutcome(
                     status=SpotActionStatus.FAILED,
                     outcome_code=OutcomeCode.NAVIGATION_FAILED,
-                    message=f"Navigation failed with status {status}.",
+                    message=f"Navigation failed (status {status}) — stop command sent.",
                     target_place_id=intent.place_id,
                     route_policy=intent.route_policy,
                     navigation_surface=binding.surface,
@@ -515,10 +571,12 @@ class RealSpotAdapter:
             # STATUS_FOLLOWING_ROUTE or STATUS_UNKNOWN — keep polling
             time.sleep(0.5)
 
+        # Timeout — stop the robot before returning
+        self._send_stop_to_robot()
         return SpotNavigationOutcome(
             status=SpotActionStatus.FAILED,
             outcome_code=OutcomeCode.NAVIGATION_FAILED,
-            message=f"Navigation timed out after {timeout_s}s.",
+            message=f"Navigation timed out after {timeout_s}s — stop command sent.",
             target_place_id=intent.place_id,
             route_policy=intent.route_policy,
             recommended_action="abort_or_retry",
@@ -527,6 +585,11 @@ class RealSpotAdapter:
     # -- relocalization ---------------------------------------------------
 
     def relocalize(self, intent: SpotRelocalizeIntent) -> SpotRelocalizationOutcome:
+        """Attempt localization recovery using fiducial markers or nearest waypoint.
+
+        Calls set_localization with FIDUCIAL_INIT_NEAREST to actively trigger
+        a relocalization attempt, then verifies the result.
+        """
         if self._stop_state == SpotStopState.STOP_REQUESTED:
             return SpotRelocalizationOutcome(
                 status=SpotActionStatus.CANCELLED,
@@ -539,12 +602,18 @@ class RealSpotAdapter:
             )
 
         try:
+            from bosdyn.api.graph_nav import nav_pb2
+
+            self._graph_nav.set_localization(
+                initial_guess_localization=nav_pb2.Localization(),
+                fiducial_init=self._set_loc_request.FIDUCIAL_INIT_NEAREST,
+            )
             state = self._graph_nav.get_localization_state()
             if state.localization.waypoint_id:
                 return SpotRelocalizationOutcome(
                     status=SpotActionStatus.SUCCEEDED,
                     outcome_code=OutcomeCode.RELOCALIZATION_SUCCEEDED,
-                    message=f"Localized at waypoint {state.localization.waypoint_id}.",
+                    message=f"Relocalized at waypoint {state.localization.waypoint_id}.",
                     strategy=intent.strategy,
                     place_id=intent.place_id,
                     confidence=0.9,
@@ -553,7 +622,7 @@ class RealSpotAdapter:
             return SpotRelocalizationOutcome(
                 status=SpotActionStatus.FAILED,
                 outcome_code=OutcomeCode.RELOCALIZATION_FAILED,
-                message="No localization waypoint returned.",
+                message="set_localization succeeded but no waypoint returned.",
                 strategy=intent.strategy,
                 place_id=intent.place_id,
                 confidence=0.0,
@@ -570,15 +639,17 @@ class RealSpotAdapter:
                 recommended_action="request_operator_assistance",
             )
 
-    # -- stop control (software layer) ------------------------------------
+    # -- stop control (sends stop command to robot) -----------------------
 
     def request_stop(self, *, reason: str | None = None) -> SpotStopOutcome:
+        """Set the software stop flag and send a stop command to halt motion."""
         self._stop_state = SpotStopState.STOP_REQUESTED
         self._last_stop_reason = reason
+        self._send_stop_to_robot()
         return SpotStopOutcome(
             stop_state=self._stop_state,
             acknowledged=True,
-            message="Stop request acknowledged.",
+            message="Stop request acknowledged — stop command sent to robot.",
             reason=reason,
         )
 
