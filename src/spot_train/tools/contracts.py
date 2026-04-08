@@ -228,6 +228,15 @@ ResponseLike = (
 )
 
 
+class MoveRobotRequest(ToolRequest):
+    """Request for relative movement."""
+
+    v_x: float = Field(default=0.0, description="Forward/back speed m/s (positive=forward)")
+    v_y: float = Field(default=0.0, description="Left/right speed m/s (positive=left)")
+    v_rot: float = Field(default=0.0, description="Rotation speed rad/s (positive=CCW)")
+    duration: float = Field(default=1.0, ge=0.1, le=10.0, description="Duration in seconds")
+
+
 class PowerOnRequest(ToolRequest):
     """Request to power on the robot and stand."""
 
@@ -265,6 +274,7 @@ REQUEST_MODEL_BY_TOOL: dict[str, type[ToolRequest]] = {
     "power_off": PowerOffRequest,
     "request_stop": RequestStopRequest,
     "clear_stop": ClearStopRequest,
+    "move_robot": MoveRobotRequest,
 }
 
 
