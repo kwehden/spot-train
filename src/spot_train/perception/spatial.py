@@ -42,25 +42,9 @@ class LocalScene:
     description_age_s: float = 999.0
 
     def format_compact(self) -> str:
-        """One-line spatial context for agent prompt injection."""
-
-        def _q(name: str, q: QuadrantDepth) -> str:
-            if q.coverage < 0.01:
-                return f"{name}: no data"
-            return f"{name}: {q.min_mm / 1000:.1f}m"
-
-        parts = [
-            _q("front", self.front),
-            _q("left", self.left),
-            _q("right", self.right),
-            _q("back", self.back),
-        ]
-        nearest = f"nearest {self.nearest_obstacle_m:.1f}m at {self.nearest_obstacle_bearing:.0f}°"
+        """Spatial context for agent prompt injection."""
         pose = f"({self.x:.1f},{self.y:.1f}) {self.yaw_deg:.0f}° {self.heading_cardinal}"
-        lines = [
-            f"Scene: {' | '.join(parts)}",
-            f"Pose: {pose} | {nearest}",
-        ]
+        lines = [f"Pose: {pose}"]
         if self.scene_description and self.description_age_s < 30:
             lines.append(f"View: {self.scene_description}")
         elif self.scene_description:
@@ -72,26 +56,16 @@ class LocalScene:
         return math.degrees(self.yaw) % 360
 
     def is_blocked(self, v_x: float, v_y: float, threshold_mm: int = 300) -> str | None:
-        """Return a reason string if movement would hit an obstacle, else None."""
-        if v_x > 0 and self.front.coverage > 0.05 and self.front.min_mm < threshold_mm:
-            return f"Obstacle {self.front.min_mm}mm ahead"
-        if v_x < 0 and self.back.coverage > 0.05 and self.back.min_mm < threshold_mm:
-            return f"Obstacle {self.back.min_mm}mm behind"
-        if v_y > 0 and self.left.coverage > 0.05 and self.left.min_mm < threshold_mm:
-            return f"Obstacle {self.left.min_mm}mm to the left"
-        if v_y < 0 and self.right.coverage > 0.05 and self.right.min_mm < threshold_mm:
-            return f"Obstacle {self.right.min_mm}mm to the right"
-        return None
+        """Spot's native obstacle avoidance handles collision prevention."""
+        return None  # defer to robot's built-in safety
 
 
 _CARDINALS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
 
-# Front cameras + depth for lightweight polling
+# Front cameras only — depth handled by Spot's native obstacle avoidance
 _POLL_SOURCES = [
     "frontleft_fisheye_image",
     "frontright_fisheye_image",
-    "frontleft_depth_in_visual_frame",
-    "frontright_depth_in_visual_frame",
 ]
 
 
@@ -175,95 +149,33 @@ class SpatialAwarenessActor:
 
         from bosdyn.client.frame_helpers import get_odom_tform_body
 
-        standing = self._is_standing()
+        # Only poll cameras when standing
+        if self._is_standing():
+            responses = self._image_client.get_image_from_sources(_POLL_SOURCES)
+            for resp in responses:
+                name = resp.source.name
+                data = resp.shot.image.data
+                if "fisheye" in name:
+                    is_jpeg = data[:2] == b"\xff\xd8"
+                    if is_jpeg:
+                        self._front_b64[name] = base64.b64encode(data).decode()
+                    else:
+                        try:
+                            import cv2
 
-        # Only poll depth when standing — cameras see the ground otherwise
-        sources = (
-            list(_POLL_SOURCES) if standing else [s for s in _POLL_SOURCES if "depth" not in s]
-        )
-        if not sources:
-            return
-        responses = self._image_client.get_image_from_sources(sources)
-
-        depth_left: np.ndarray | None = None
-        depth_right: np.ndarray | None = None
-
-        for resp in responses:
-            name = resp.source.name
-            data = resp.shot.image.data
-            rows = resp.shot.image.rows
-            cols = resp.shot.image.cols
-
-            if name == "frontleft_depth_in_visual_frame":
-                if len(data) == rows * cols * 2:
-                    depth_left = np.frombuffer(data, dtype=np.uint16).reshape(rows, cols)
-            elif name == "frontright_depth_in_visual_frame":
-                if len(data) == rows * cols * 2:
-                    depth_right = np.frombuffer(data, dtype=np.uint16).reshape(rows, cols)
-            elif "fisheye" in name:
-                # Cache b64 for VLM
-                is_jpeg = data[:2] == b"\xff\xd8"
-                if is_jpeg:
-                    self._front_b64[name] = base64.b64encode(data).decode()
-                else:
-                    try:
-                        import cv2
-
-                        arr = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
-                        if arr is not None:
-                            _, jpeg = cv2.imencode(".jpg", arr, [int(cv2.IMWRITE_JPEG_QUALITY), 50])
-                            self._front_b64[name] = base64.b64encode(jpeg.tobytes()).decode()
-                    except ImportError:
-                        pass
-
-        # Build quadrant depths from the two front depth images
-        # Front-left covers left-of-center, front-right covers right-of-center
-        scene = LocalScene(timestamp=time.time())
-
-        if depth_left is not None:
-            cols_l = depth_left.shape[1]
-            scene.front = _quadrant_from_depth(depth_left, cols_l // 4, 3 * cols_l // 4)
-            scene.left = _quadrant_from_depth(depth_left, 0, cols_l // 4)
-
-        if depth_right is not None:
-            cols_r = depth_right.shape[1]
-            if scene.front.coverage == 0:
-                scene.front = _quadrant_from_depth(depth_right, cols_r // 4, 3 * cols_r // 4)
-            else:
-                # Merge: take the closer reading
-                fr = _quadrant_from_depth(depth_right, cols_r // 4, 3 * cols_r // 4)
-                if fr.coverage > 0 and fr.min_mm < scene.front.min_mm:
-                    scene.front.min_mm = fr.min_mm
-            scene.right = _quadrant_from_depth(depth_right, 3 * cols_r // 4, cols_r)
-
-        # Back quadrant: not polled in lightweight mode, leave as default
-
-        # Nearest obstacle
-        all_quads = [
-            (scene.front, 0),
-            (scene.left, 90),
-            (scene.right, 270),
-        ]
-        nearest_mm = 99000
-        nearest_bearing = 0.0
-        for q, bearing in all_quads:
-            if q.coverage > 0.01 and q.min_mm < nearest_mm:
-                nearest_mm = q.min_mm
-                nearest_bearing = bearing
-        scene.nearest_obstacle_m = nearest_mm / 1000.0
-        scene.nearest_obstacle_bearing = nearest_bearing
-
-        # Clearest path: quadrant with largest min_mm
-        best_dist = 0
-        best_bearing = 0.0
-        for q, bearing in all_quads:
-            if q.coverage > 0.01 and q.min_mm > best_dist:
-                best_dist = q.min_mm
-                best_bearing = bearing
-        scene.clearest_path_bearing = best_bearing
-        scene.clearest_path_distance = best_dist / 1000.0
+                            arr = cv2.imdecode(
+                                np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR
+                            )
+                            if arr is not None:
+                                _, jpeg = cv2.imencode(
+                                    ".jpg", arr, [int(cv2.IMWRITE_JPEG_QUALITY), 50]
+                                )
+                                self._front_b64[name] = base64.b64encode(jpeg.tobytes()).decode()
+                        except ImportError:
+                            pass
 
         # Robot pose
+        scene = LocalScene(timestamp=time.time())
         try:
             state = self._state_client.get_robot_state()
             odom = get_odom_tform_body(state.kinematic_state.transforms_snapshot)
@@ -275,17 +187,11 @@ class SpatialAwarenessActor:
         except Exception:
             pass
 
-        # Carry over VLM description from previous scene
+        # Carry over VLM description
         with self._lock:
             scene.scene_description = self._scene.scene_description
             scene.description_age_s = time.time() - self._last_vlm_time
             self._scene = scene
-
-        # Push to viewer if available
-        if self._viewer and self._front_b64:
-            for name, b64 in self._front_b64.items():
-                # Viewer gets the raw frames from the video loop, not from here
-                pass
 
     def _maybe_vlm(self) -> None:
         """Run lightweight VLM description if interval has elapsed."""

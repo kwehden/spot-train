@@ -1,4 +1,4 @@
-"""Tests for LocalScene and QuadrantDepth."""
+"""Tests for spatial awareness (LocalScene, QuadrantDepth)."""
 
 from __future__ import annotations
 
@@ -11,28 +11,8 @@ from spot_train.perception.spatial import (
 )
 
 
-def _make_scene(**overrides) -> LocalScene:
-    defaults = dict(
-        front=QuadrantDepth(min_mm=2000, mean_mm=3000, max_mm=5000, coverage=0.5),
-        left=QuadrantDepth(min_mm=2000, mean_mm=3000, max_mm=5000, coverage=0.5),
-        right=QuadrantDepth(min_mm=2000, mean_mm=3000, max_mm=5000, coverage=0.5),
-        back=QuadrantDepth(min_mm=2000, mean_mm=3000, max_mm=5000, coverage=0.5),
-        x=0.0,
-        y=0.0,
-        yaw=0.0,
-        heading_cardinal="N",
-        scene_description="",
-    )
-    defaults.update(overrides)
-    return LocalScene(**defaults)
-
-
 def test_local_scene_format_compact():
     scene = LocalScene(
-        front=QuadrantDepth(min_mm=1200, mean_mm=2000, max_mm=5000, coverage=0.5),
-        left=QuadrantDepth(min_mm=800, mean_mm=1500, max_mm=3000, coverage=0.4),
-        right=QuadrantDepth(min_mm=5000, mean_mm=6000, max_mm=8000, coverage=0.3),
-        back=QuadrantDepth(min_mm=3000, mean_mm=4000, max_mm=6000, coverage=0.2),
         x=1.0,
         y=-0.5,
         yaw=0.26,
@@ -41,39 +21,27 @@ def test_local_scene_format_compact():
         description_age_s=5.0,
     )
     text = scene.format_compact()
-    assert "front: 1.2m" in text
-    assert "left: 0.8m" in text
     assert "NNE" in text
     assert "desk ahead" in text
+    assert "Pose:" in text
 
 
-def test_local_scene_is_blocked_forward():
-    scene = _make_scene(
-        front=QuadrantDepth(min_mm=200, mean_mm=500, max_mm=1000, coverage=0.1),
+def test_local_scene_is_blocked_defers_to_robot():
+    """is_blocked always returns None — Spot handles obstacle avoidance."""
+    scene = LocalScene(
+        front=QuadrantDepth(min_mm=200, mean_mm=300, max_mm=500, coverage=0.1),
     )
-    result = scene.is_blocked(v_x=0.5, v_y=0)
-    assert result is not None
-    assert "200mm" in result
+    assert scene.is_blocked(v_x=0.5, v_y=0) is None
 
 
 def test_local_scene_is_blocked_returns_none_when_clear():
-    scene = _make_scene(
+    scene = LocalScene(
         front=QuadrantDepth(min_mm=2000, mean_mm=3000, max_mm=5000, coverage=0.1),
     )
-    result = scene.is_blocked(v_x=0.5, v_y=0)
-    assert result is None
-
-
-def test_local_scene_is_blocked_backward():
-    scene = _make_scene(
-        back=QuadrantDepth(min_mm=150, mean_mm=400, max_mm=800, coverage=0.1),
-    )
-    result = scene.is_blocked(v_x=-0.5, v_y=0)
-    assert result is not None
+    assert scene.is_blocked(v_x=0.5, v_y=0) is None
 
 
 def test_quadrant_from_depth():
-    # Use values > 350mm and < 8000mm to pass the depth filter
     arr = np.array(
         [[600, 700, 800, 900, 1000, 1100], [650, 750, 850, 950, 1050, 1150], [0, 0, 0, 0, 0, 0]],
         dtype=np.uint16,
