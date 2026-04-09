@@ -19,6 +19,7 @@ import numpy as np
 from PIL import Image, ImageTk
 
 _log = logging.getLogger("spot_train.viewer")
+_ERROR_LOG_INTERVAL = 10
 
 # Camera sources in grid order: row1 (FL, FR, Back), row2 (Left, Right)
 CAMERA_SOURCES = [
@@ -297,7 +298,7 @@ class SpotTrainViewer:
 
             except Exception:
                 consecutive_errors += 1
-                if consecutive_errors == 1 or consecutive_errors % 10 == 0:
+                if consecutive_errors == 1 or consecutive_errors % _ERROR_LOG_INTERVAL == 0:
                     _log.warning("Viewer video error (count=%d)", consecutive_errors, exc_info=True)
                 time.sleep(min(consecutive_errors, 10))
                 continue

@@ -185,7 +185,11 @@ def create_agent(*, model_id: str | None = None, region: str | None = None):
     from strands.models.bedrock import BedrockModel
 
     model_id = model_id or os.environ.get(
-        "SPOT_TRAIN_BEDROCK_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+        # Haiku 4.5: chosen for speed (~2x faster than Sonnet 4) while
+        # retaining strong tool-use capability. Override with --model-id
+        # or SPOT_TRAIN_BEDROCK_MODEL_ID for heavier reasoning tasks.
+        "SPOT_TRAIN_BEDROCK_MODEL_ID",
+        "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     )
     region = region or os.environ.get("SPOT_TRAIN_BEDROCK_REGION", "us-west-2")
 

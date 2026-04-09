@@ -73,7 +73,7 @@ def test_local_scene_is_blocked_backward():
 
 
 def test_quadrant_from_depth():
-    # Use values > 500mm and < 8000mm to pass the depth filter
+    # Use values > 350mm and < 8000mm to pass the depth filter
     arr = np.array(
         [[600, 700, 800, 900, 1000, 1100], [650, 750, 850, 950, 1050, 1150], [0, 0, 0, 0, 0, 0]],
         dtype=np.uint16,

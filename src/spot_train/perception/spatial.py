@@ -98,12 +98,12 @@ _POLL_SOURCES = [
 def _quadrant_from_depth(depth_mm: np.ndarray, col_start: int, col_end: int) -> QuadrantDepth:
     """Compute depth stats for a column slice of a depth image.
 
-    Minimum valid depth is 500mm to filter ground-plane readings from
-    the downward-angled cameras. Maximum is 8000mm (8m) to ignore
-    sky/ceiling noise.
+    Minimum valid depth is 350mm — at standing height (~0.5m body),
+    the downward-angled cameras see ground at ~400mm. Objects closer
+    than 350mm are real obstacles. Maximum 8m filters ceiling noise.
     """
     region = depth_mm[:, col_start:col_end]
-    valid = region[(region > 500) & (region < 8000)]
+    valid = region[(region > 350) & (region < 8000)]
     if valid.size == 0:
         return QuadrantDepth()
     return QuadrantDepth(
@@ -178,9 +178,9 @@ class SpatialAwarenessActor:
         standing = self._is_standing()
 
         # Only poll depth when standing — cameras see the ground otherwise
-        sources = list(_POLL_SOURCES) if standing else [
-            s for s in _POLL_SOURCES if "depth" not in s
-        ]
+        sources = (
+            list(_POLL_SOURCES) if standing else [s for s in _POLL_SOURCES if "depth" not in s]
+        )
         if not sources:
             return
         responses = self._image_client.get_image_from_sources(sources)

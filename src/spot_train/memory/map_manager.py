@@ -45,6 +45,7 @@ class MapManager:
         self._save_queue: queue.Queue[str] = queue.Queue()
         self._save_thread = threading.Thread(target=self._save_loop, daemon=True)
         self._save_thread.start()
+        self._snapshot_thread: threading.Thread | None = None
 
     def stop(self) -> None:
         """Flush pending saves and stop the background thread.
@@ -58,6 +59,8 @@ class MapManager:
         self._save_thread.join(timeout=10)
         if self._save_thread.is_alive():
             _log.warning("Map save thread did not terminate within 10s")
+        if self._snapshot_thread and self._snapshot_thread.is_alive():
+            self._snapshot_thread.join(timeout=30)
 
     # -- Public API -------------------------------------------------------
 
@@ -263,7 +266,7 @@ class MapManager:
                 return
             print("  Robot has no graph loaded")
         except Exception:
-            print("  Could not check robot graph")
+            _log.warning("Could not check robot graph", exc_info=True)
 
         graph_path = os.path.join(self._map_dir, "graph")
         if not os.path.exists(graph_path):
@@ -282,41 +285,48 @@ class MapManager:
         total = len(missing_wp) + len(missing_edge)
         if total > 0:
             print(f"  Uploading {total} snapshots in background...")
-            threading.Thread(
+            self._snapshot_thread = threading.Thread(
                 target=self._upload_snapshots,
                 args=(missing_wp, missing_edge),
-                daemon=True,
-            ).start()
+            )
+            self._snapshot_thread.start()
         else:
             print("  All snapshots already on robot.")
 
     def _upload_snapshots(self, missing_wp: set, missing_edge: set) -> None:
-        """Upload missing snapshots in background thread."""
+        """Upload missing snapshots (runs in non-daemon thread)."""
         from bosdyn.api.graph_nav import map_pb2
 
         count = 0
+        errors = 0
         for fname in os.listdir(self._map_dir):
             path = os.path.join(self._map_dir, fname)
             try:
                 if fname.startswith("waypoint_snapshot_"):
                     sid = fname[len("waypoint_snapshot_") :]
-                    if sid in missing_wp:
-                        with open(path, "rb") as f:
-                            snap = map_pb2.WaypointSnapshot()
-                            snap.ParseFromString(f.read())
-                            self._gn.upload_waypoint_snapshot(snap)
-                            count += 1
+                    if sid not in missing_wp:
+                        continue
+                    with open(path, "rb") as f:
+                        snap = map_pb2.WaypointSnapshot()
+                        snap.ParseFromString(f.read())
+                        self._gn.upload_waypoint_snapshot(snap)
+                        count += 1
                 elif fname.startswith("edge_snapshot_"):
                     sid = fname[len("edge_snapshot_") :]
-                    if sid in missing_edge:
-                        with open(path, "rb") as f:
-                            snap = map_pb2.EdgeSnapshot()
-                            snap.ParseFromString(f.read())
-                            self._gn.upload_edge_snapshot(snap)
-                            count += 1
+                    if sid not in missing_edge:
+                        continue
+                    with open(path, "rb") as f:
+                        snap = map_pb2.EdgeSnapshot()
+                        snap.ParseFromString(f.read())
+                        self._gn.upload_edge_snapshot(snap)
+                        count += 1
             except Exception:
-                pass
-        _log.info("Background snapshot upload complete: %d uploaded", count)
+                errors += 1
+                _log.debug("Snapshot upload failed: %s", fname, exc_info=True)
+        if errors:
+            _log.warning("Snapshot upload: %d ok, %d failed", count, errors)
+        else:
+            _log.info("Snapshot upload complete: %d uploaded", count)
 
     def _sync_bindings(self) -> None:
         """Register all active graph refs as adapter navigation bindings."""
