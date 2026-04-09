@@ -257,10 +257,13 @@ class MapManager:
 
         try:
             graph = self._gn.download_graph()
-            if list(graph.waypoints):
+            wp_count = len(list(graph.waypoints))
+            if wp_count > 0:
+                print(f"  Graph already on robot: {wp_count} waypoints")
                 return
+            print("  Robot has no graph loaded")
         except Exception:
-            pass
+            print("  Could not check robot graph")
 
         graph_path = os.path.join(self._map_dir, "graph")
         if not os.path.exists(graph_path):
