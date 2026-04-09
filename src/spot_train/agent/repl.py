@@ -133,6 +133,7 @@ class SpotTrainREPL(cmd2.Cmd):
 
         try:
             self.agent(prompt)
+            print()  # newline after streamed output
         except KeyboardInterrupt:
             self.poutput("\n[interrupted]")
         except Exception as exc:
