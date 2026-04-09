@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import threading
@@ -13,6 +14,9 @@ from spot_train.adapters.spot import (
 )
 from spot_train.memory.repository import WorldRepository
 from spot_train.models import AliasType, GraphRef, Place, PlaceAlias
+
+_log = logging.getLogger("spot_train.map_manager")
+_STOP_SENTINEL = "__stop__"
 
 
 class MapManager:
@@ -41,11 +45,22 @@ class MapManager:
         self._save_queue: queue.Queue[str] = queue.Queue()
         self._save_thread = threading.Thread(target=self._save_loop, daemon=True)
         self._save_thread.start()
+        self._snapshot_thread: threading.Thread | None = None
 
     def stop(self) -> None:
-        """Flush pending saves and stop the background thread."""
-        self._save_queue.put("__stop__")
+        """Flush pending saves and stop the background thread.
+
+        Sends a stop sentinel to the save queue and waits up to 10 seconds
+        for the thread to finish any in-flight save. If the thread does not
+        terminate within the timeout, it is abandoned (daemon thread will be
+        cleaned up on process exit).
+        """
+        self._save_queue.put(_STOP_SENTINEL)
         self._save_thread.join(timeout=10)
+        if self._save_thread.is_alive():
+            _log.warning("Map save thread did not terminate within 10s")
+        if self._snapshot_thread and self._snapshot_thread.is_alive():
+            self._snapshot_thread.join(timeout=30)
 
     # -- Public API -------------------------------------------------------
 
@@ -237,7 +252,7 @@ class MapManager:
                 edge.id.to_waypoint = new_wp_id
                 self._rec.create_edge(edge=edge)
         except Exception:
-            pass  # best-effort
+            _log.debug("Auto-edge creation failed (best-effort)", exc_info=True)
 
     def _upload_if_needed(self) -> None:
         """Upload saved graph if robot has none loaded."""
@@ -245,10 +260,13 @@ class MapManager:
 
         try:
             graph = self._gn.download_graph()
-            if list(graph.waypoints):
+            wp_count = len(list(graph.waypoints))
+            if wp_count > 0:
+                print(f"  Graph already on robot: {wp_count} waypoints")
                 return
+            print("  Robot has no graph loaded")
         except Exception:
-            pass
+            _log.warning("Could not check robot graph", exc_info=True)
 
         graph_path = os.path.join(self._map_dir, "graph")
         if not os.path.exists(graph_path):
@@ -259,23 +277,56 @@ class MapManager:
             saved.ParseFromString(f.read())
 
         print(f"  Uploading graph: {len(saved.waypoints)} waypoints...")
-        self._gn.upload_graph(graph=saved, generate_new_anchoring=True)
+        resp = self._gn.upload_graph(graph=saved, generate_new_anchoring=True)
 
+        # Upload snapshots in background to avoid blocking startup
+        missing_wp = set(resp.unknown_waypoint_snapshot_ids) if resp else set()
+        missing_edge = set(resp.unknown_edge_snapshot_ids) if resp else set()
+        total = len(missing_wp) + len(missing_edge)
+        if total > 0:
+            print(f"  Uploading {total} snapshots in background...")
+            self._snapshot_thread = threading.Thread(
+                target=self._upload_snapshots,
+                args=(missing_wp, missing_edge),
+            )
+            self._snapshot_thread.start()
+        else:
+            print("  All snapshots already on robot.")
+
+    def _upload_snapshots(self, missing_wp: set, missing_edge: set) -> None:
+        """Upload missing snapshots (runs in non-daemon thread)."""
+        from bosdyn.api.graph_nav import map_pb2
+
+        count = 0
+        errors = 0
         for fname in os.listdir(self._map_dir):
             path = os.path.join(self._map_dir, fname)
             try:
                 if fname.startswith("waypoint_snapshot_"):
+                    sid = fname[len("waypoint_snapshot_") :]
+                    if sid not in missing_wp:
+                        continue
                     with open(path, "rb") as f:
                         snap = map_pb2.WaypointSnapshot()
                         snap.ParseFromString(f.read())
                         self._gn.upload_waypoint_snapshot(snap)
+                        count += 1
                 elif fname.startswith("edge_snapshot_"):
+                    sid = fname[len("edge_snapshot_") :]
+                    if sid not in missing_edge:
+                        continue
                     with open(path, "rb") as f:
                         snap = map_pb2.EdgeSnapshot()
                         snap.ParseFromString(f.read())
                         self._gn.upload_edge_snapshot(snap)
+                        count += 1
             except Exception:
-                pass
+                errors += 1
+                _log.debug("Snapshot upload failed: %s", fname, exc_info=True)
+        if errors:
+            _log.warning("Snapshot upload: %d ok, %d failed", count, errors)
+        else:
+            _log.info("Snapshot upload complete: %d uploaded", count)
 
     def _sync_bindings(self) -> None:
         """Register all active graph refs as adapter navigation bindings."""
@@ -307,14 +358,14 @@ class MapManager:
             except queue.Empty:
                 continue
 
-            if msg == "__stop__":
+            if msg == _STOP_SENTINEL:
                 return
 
             # Drain any additional queued saves
             while not self._save_queue.empty():
                 try:
                     m = self._save_queue.get_nowait()
-                    if m == "__stop__":
+                    if m == _STOP_SENTINEL:
                         return
                 except queue.Empty:
                     break
@@ -351,4 +402,4 @@ class MapManager:
                         except Exception:
                             pass
             except Exception:
-                pass  # best-effort save
+                _log.exception("Graph save to disk failed")
