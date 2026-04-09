@@ -273,30 +273,47 @@ class MapManager:
         print(f"  Uploading graph: {len(saved.waypoints)} waypoints...")
         resp = self._gn.upload_graph(graph=saved, generate_new_anchoring=True)
 
-        # Only upload snapshots the robot doesn't already have
+        # Upload snapshots in background to avoid blocking startup
         missing_wp = set(resp.unknown_waypoint_snapshot_ids) if resp else set()
         missing_edge = set(resp.unknown_edge_snapshot_ids) if resp else set()
-        print(f"  Missing snapshots: {len(missing_wp)} waypoint, {len(missing_edge)} edge")
+        total = len(missing_wp) + len(missing_edge)
+        if total > 0:
+            print(f"  Uploading {total} snapshots in background...")
+            threading.Thread(
+                target=self._upload_snapshots,
+                args=(missing_wp, missing_edge),
+                daemon=True,
+            ).start()
+        else:
+            print("  All snapshots already on robot.")
 
+    def _upload_snapshots(self, missing_wp: set, missing_edge: set) -> None:
+        """Upload missing snapshots in background thread."""
+        from bosdyn.api.graph_nav import map_pb2
+
+        count = 0
         for fname in os.listdir(self._map_dir):
             path = os.path.join(self._map_dir, fname)
             try:
                 if fname.startswith("waypoint_snapshot_"):
                     sid = fname[len("waypoint_snapshot_") :]
-                    if not missing_wp or sid in missing_wp:
+                    if sid in missing_wp:
                         with open(path, "rb") as f:
                             snap = map_pb2.WaypointSnapshot()
                             snap.ParseFromString(f.read())
                             self._gn.upload_waypoint_snapshot(snap)
+                            count += 1
                 elif fname.startswith("edge_snapshot_"):
                     sid = fname[len("edge_snapshot_") :]
-                    if not missing_edge or sid in missing_edge:
+                    if sid in missing_edge:
                         with open(path, "rb") as f:
                             snap = map_pb2.EdgeSnapshot()
                             snap.ParseFromString(f.read())
                             self._gn.upload_edge_snapshot(snap)
+                            count += 1
             except Exception:
                 pass
+        _log.info("Background snapshot upload complete: %d uploaded", count)
 
     def _sync_bindings(self) -> None:
         """Register all active graph refs as adapter navigation bindings."""
