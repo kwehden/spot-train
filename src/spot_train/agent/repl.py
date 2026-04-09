@@ -185,7 +185,7 @@ def create_agent(*, model_id: str | None = None, region: str | None = None):
     from strands.models.bedrock import BedrockModel
 
     model_id = model_id or os.environ.get(
-        "SPOT_TRAIN_BEDROCK_MODEL_ID", "nvidia.nemotron-nano-12b-v2"
+        "SPOT_TRAIN_BEDROCK_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     )
     region = region or os.environ.get("SPOT_TRAIN_BEDROCK_REGION", "us-west-2")
 
